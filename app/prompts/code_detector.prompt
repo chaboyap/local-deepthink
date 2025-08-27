@@ -1,0 +1,7 @@
+Analyze the following text. Your task is to determine if the text contains a runnable code block (e.g., Python, JavaScript, etc.).
+Answer with a single word: "true" if it contains code, and "false" otherwise.
+
+Text to analyze:
+---
+{text}
+---

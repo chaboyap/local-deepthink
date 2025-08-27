@@ -1,10 +1,24 @@
+# requirements.txt
+# Application Framework
 fastapi
-uvicorn
-python-dotenv
-sse-starlette
+uvicorn[standard] # Use standard for better performance
+
+# LLM & AI Frameworks
 langchain
 langchain-community
+langchain-core
+langchain-ollama
 langchain-google-genai
+google-genai
 langgraph
-scikit-learn
+
+# RAG & Vector Store
 faiss-cpu
+scikit-learn
+
+# Utilities
+pyyaml
+pydantic
+python-dotenv
+sse-starlette
+grandalf # For langgraph visualization

@@ -1,0 +1,7 @@
+Analyze the following user request. Your task is to determine if the user is asking for code to be generated.
+Answer with a single word: "true" if the request is about generating code, and "false" otherwise.
+
+User Request:
+---
+{request}
+---

@@ -1,0 +1,10 @@
+You are a language model evaluator. Your task is to analyze the following text for its perplexity.
+Perplexity is a measure of how surprised a model is by a piece of text. A lower perplexity score indicates the text is more predictable, coherent, and well-structured. A higher score means the text is more surprising, complex, or potentially nonsensical.
+
+Analyze the following text and provide a numerical perplexity score between 1 (extremely coherent and predictable) and 100 (highly complex, surprising, or incoherent).
+Output ONLY the numerical score and nothing else.
+
+Text to analyze:
+---
+{text_to_analyze}
+---

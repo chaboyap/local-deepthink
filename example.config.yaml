@@ -1,0 +1,163 @@
+# example.config.yaml
+#
+# This is a comprehensive example configuration file for the Network of Agents (NoA) application.
+# It demonstrates how to set up different LLM providers (Gemini, Ollama, Kobold.cpp) for each role.
+#
+# To use a specific configuration:
+# 1. Rename this file to `config.yaml`.
+# 2. Uncomment the desired provider block for each LLM role (main_llm, synthesizer_llm, etc.).
+# 3. Ensure any other provider blocks for that same role are commented out.
+# 4. Make sure you have the necessary services running (e.g., Ollama server, Kobold.cpp API).
+# 5. Add your API keys to a `.env` file in the root directory (e.g., GOOGLE_API_KEY="your_key_here").
+
+# -----------------------------------------------------------------------------
+# Debugging Flags
+# -----------------------------------------------------------------------------
+# These flags are useful for rapid, cost-free testing. Enabling either will
+# override the LLM providers specified below.
+debugging:
+  debug_mode: false       # Uses a mock LLM for fast, non-sensical text responses.
+  coder_debug_mode: false # Uses a mock LLM that generates pre-canned code snippets.
+
+# -----------------------------------------------------------------------------
+# Graph Hyperparameters
+# -----------------------------------------------------------------------------
+# These parameters control the architecture and behavior of the agent network.
+hyperparameters:
+  # The number of agent layers in the network. A deeper network allows for more complex reasoning.
+  cot_trace_depth: 3
+  
+  # The number of full forward/backward passes the network will run. Each epoch refines the solution.
+  num_epochs: 2
+  
+  # The number of expert-level questions the interrogator agent will generate for the final report.
+  num_questions_for_harvest: 10
+
+  # --- Agent Generation Parameters ---
+  
+  # The number of "seed verbs" used to define the initial persona of each agent.
+  vector_word_size: 3
+  
+  # (0.1 - 2.0) Controls how specialized an agent's 'Career' is to its sub-problem.
+  # Higher values create more niche, focused agents.
+  prompt_alignment: 1.0
+  
+  # (0.1 - 2.0) Controls how much an agent's 'Skills' are influenced by its 'Attributes'.
+  # Higher values result in skills that are more stylistic extensions of the agent's persona.
+  density: 1.0
+
+  # Determines which agents receive individual critiques during the reflection pass.
+  # "penultimate": (Default, Efficient) Only critiques the layer directly preceding the final synthesis.
+  # "full": (Exhaustive, Slow) Critiques every agent in every layer except the last.
+  critique_strategy: "penultimate"
+
+  # (0.1 - 2.0) Controls how significantly an agent's prompt changes based on critique.
+  learning_rate: 0.3
+  
+  # The default prompt that will be pre-filled in the UI.
+  default_prompt: "Create a simple game of Conway's game of life in python, no GUI, just console."
+  
+  # The default MBTI types that will be pre-selected in the UI.
+  default_mbti_selection:
+    - "INTJ"
+    - "ENTP"
+
+  # These values prevent the application from hanging if an LLM call becomes unresponsive.
+  timeouts:
+    agent_timeout_seconds: 300
+    reflection_timeout_seconds: 300
+    synthesis_timeout_seconds: 600
+
+# -----------------------------------------------------------------------------
+# LLM Provider Configuration
+# -----------------------------------------------------------------------------
+# For each role, choose ONE provider and comment out the others.
+llm_providers:
+
+  # --- Main LLM ---
+  # The workhorse model for the individual agents in the network.
+  main_llm:
+    # OPTION 1: Google Gemini (Recommended Default)
+    # Uses the official `google-genai` SDK. Requires a GOOGLE_API_KEY in your .env file.
+    provider: "gemini"
+    model_name: "gemini-2.5-flash"
+    enable_structured_output: false
+    config:
+      temperature: 1.00
+      top_p: 0.95
+
+#  main_llm:
+#    # OPTION 2: Ollama (for local models)
+#    # Requires the Ollama server to be running. Make sure you have pulled the model (e.g., `ollama pull llama3`).
+#    provider: "ollama"
+#    model_name: "llama3:8b"
+#    enable_structured_output: false # Will use delimiter method; success depends on model's instruction following.
+#    config:
+#      temperature: 0.7
+
+#  main_llm:
+#    # OPTION 3: Kobold.cpp (for local models via Kobold API)
+#    # Requires a Kobold.cpp server running with the API enabled.
+#    provider: "kobold"
+#    model_name: "placeholder" # Model name is handled by the Kobold server
+#    enable_structured_output: false
+#    config:
+#      endpoint: "http://localhost:5001/api"
+
+  # --- Synthesizer LLM ---
+  # A powerful model used for the final synthesis step and as a fallback for failing agents.
+  synthesizer_llm:
+    # OPTION 1: Google Gemini (Recommended Default)
+    provider: "gemini"
+    model_name: "gemini-2.5-pro"
+    # This MUST be true for non-code synthesis and reliable agent fallbacks to work.
+    enable_structured_output: true
+    config:
+      top_p: 0.95
+      temperature: 0.85
+      max_output_tokens: 65535
+
+#  synthesizer_llm:
+#    # OPTION 2: Ollama (for local models)
+#    # Recommended to use your largest, most capable model for this role.
+#    provider: "ollama"
+#    model_name: "mixtral:8x7b-instruct-v0.1-q5_K_M"
+#    enable_structured_output: true
+#    config:
+#      temperature: 0.5
+
+  # --- Summarizer LLM ---
+  # A fast and efficient model for summarizing text for memory and RAG.
+  summarizer_llm:
+    # OPTION 1: Google Gemini (Recommended Default)
+    provider: "gemini"
+    model_name: "gemini-2.5-flash"
+    config:
+      max_output_tokens: 8192
+      temperature: 0.2 # Low temperature for more deterministic and consistent summaries.
+
+#  summarizer_llm:
+#    # OPTION 2: Ollama (for local models, with custom large context)
+#    # This example uses a custom model created for a larger context window.
+#    # See the project's README or documentation for instructions on how to create this model.
+#    provider: "ollama"
+#    model_name: "qwen3:1.7b-largectx"
+#    config:
+#      temperature: 0.2
+
+  # --- Embeddings Model ---
+  # Used to create vector embeddings for the RAG index.
+  embeddings_model:
+    # OPTION 1: Google Gemini (Recommended Default)
+    provider: "gemini"
+    model_name: "models/text-embedding-004"
+
+#  embeddings_model:
+#    # OPTION 2: Ollama (for local models)
+#    # This is a high-performance, open-source embeddings model.
+#    # Pull it first with `ollama pull mxbai-embed-large:latest`.
+#    provider: "ollama"
+#    model_name: "mxbai-embed-large:latest"
+    
+#  # NOTE: Kobold.cpp does not have a native embeddings endpoint.
+#  # If you use Kobold for chat, you must configure Gemini or Ollama for emb

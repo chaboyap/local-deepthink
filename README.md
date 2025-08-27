@@ -1,5 +1,9 @@
 ![thumbnail](https://github.com/user-attachments/assets/13694758-a5c9-40c5-9c07-c7a168e660cf)
 
+Developer's Note: This is an active fork.
+This repository is a fork of the original [local-deepthink] by [@iblameandrew]. It is currently undergoing a significant architectural refactor to improve modularity, add new providers, and introduce robust logging.
+The goal is to propose these improvements back to the original project. For now, please consider this a work-in-progress. You can find the original, stable project https://github.com/iblameandrew/local-deepthink.
+
 # Network of Agents (NoA): Democratizing Deep Thought 🧠
 
 I've been thinking a lot about how we, as people, develop ideas. It's rarely a single, brilliant flash of insight. Our minds are shaped by the countless small interactions we have throughout the day—a conversation here, an article there. This environment of constant, varied input seems just as important as the act of thinking itself.
@@ -131,7 +135,7 @@ This is still alpha software, and we need your help benchmarking. I don't have a
     *   Ensure the Ollama application is running.
 5.  **Run the application:**
     ```bash
-    uvicorn app:app --reload
+    python -m uvicorn main:app --reload
     ```
 6.  **Access the GUI:** Open your browser to `http://127.0.0.1:8000`.
 

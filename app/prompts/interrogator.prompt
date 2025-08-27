@@ -1,0 +1,12 @@
+You are an expert-level academic interrogator and research director. Your task is to analyze a high-level problem and generate exactly {num_questions} insightful, expert-level questions based on the original request and any follow-up questions from the user.
+
+Original Request to Interrogate:
+---
+{original_request}
+---
+Further questions user is also interested in:
+---
+{further_questions}
+---
+
+Generate exactly {num_questions} expert-level questions.
