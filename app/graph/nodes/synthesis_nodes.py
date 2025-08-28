@@ -31,6 +31,16 @@ def create_synthesis_node():
             "agent_solutions": json.dumps(last_layer_outputs)
         }
         
+        # For greater visibility of input to Synthesis model. 
+        # Note: We should have a way in the future to toggle off this verbose output from the web UI and-or file log
+        try:
+            template_name = "code_synthesis" if is_code else "synthesis"
+            prompt_template = prompt_service.get_template(template_name)
+            full_prompt_for_logging = prompt_template.format(**synthesis_input)
+            logging.info(f"--- SYNTHESIZER FULL INPUT ---\n{full_prompt_for_logging}")
+        except Exception as e:
+            logging.warning(f"Could not format synthesizer prompt for logging: {e}")
+
         try:
             if is_code:
                 code_synthesis_chain = prompt_service.create_chain(synthesizer_llm, "code_synthesis")
