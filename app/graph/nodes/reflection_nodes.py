@@ -4,7 +4,7 @@ import json
 import logging
 import random
 
-from app.agents.personas import FunctionMapper, reactor_list
+from app.agents.personas import PersonaService, reactor_list
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
@@ -119,7 +119,7 @@ def create_update_personas_node(llm):
 
             logging.info(f"Selected new persona formula: {selected_formula}")
             # 2. Map the formula to persona prompts
-            mapper = FunctionMapper()
+            mapper = PersonaService()
             reactor_prompts = "\n".join(mapper.table(selected_formula))
             # 3. Create chains to update the prompts for critique and assessor agents
             critique_updater_chain = prompt_service.create_chain(llm, "critique_prompt_updater")
