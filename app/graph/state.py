@@ -16,7 +16,6 @@ class GraphState(TypedDict):
     original_request: str
     decomposed_problems: Dict[str, str]
     layers: List[dict]
-    critiques: Dict[str, str]
     epoch: int
     max_epochs: int
     params: GraphRunParams
@@ -25,13 +24,9 @@ class GraphState(TypedDict):
     memory: Annotated[dict, lambda a, b: {**a, **b}]
     final_solution: dict
     perplexity_history: List[float]
-    significant_progress_made: bool
     raptor_index: Optional[RAPTOR]
     all_rag_documents: List[Document]
     academic_papers: Optional[dict]
-    critique_prompt: str
-    individual_critique_prompt: str
-    assessor_prompt: str
     is_code_request: bool
     session_id: str
     chat_history: List[dict]

@@ -7,8 +7,8 @@ from langgraph.graph import StateGraph, END
 from app.graph.state import GraphState
 from app.graph.nodes import (
     create_agent_node, create_synthesis_node, create_archive_epoch_outputs_node,
-    create_update_rag_index_node, create_metrics_node, create_progress_assessor_node,
-    create_reframe_and_decompose_node, create_critique_node, create_update_personas_node,
+    create_update_rag_index_node, create_metrics_node,
+    create_reframe_and_decompose_node,
     create_update_agent_prompts_node
 )
 from app.services.agent_factory import AgentFactory
@@ -83,11 +83,8 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     update_rag_node_func = create_update_rag_index_node(summarizer_llm, embeddings_model)
     workflow.add_node("update_rag_index", update_rag_node_func)
     workflow.add_node("metrics", create_metrics_node(llm))
-    workflow.add_node("update_personas", create_update_personas_node(llm))
-    workflow.add_node("progress_assessor", create_progress_assessor_node())
     workflow.add_node("reframe_and_decompose", create_reframe_and_decompose_node())
     workflow.add_node("update_prompts", create_update_agent_prompts_node())
-    workflow.add_node("critique", create_critique_node(llm))
     workflow.add_node("build_final_rag_index", lambda state: update_rag_node_func(state, end_of_run=True))
     
     logging.info("--- Connecting Graph Nodes ---")
@@ -108,17 +105,10 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     
     workflow.add_conditional_edges(
         "metrics",
-        lambda state: "build_final_rag_index" if state["epoch"] >= state["max_epochs"] else "progress_assessor",
-        {"build_final_rag_index": END, "progress_assessor": "progress_assessor"}
-    )
-    workflow.add_conditional_edges(
-        "progress_assessor",
-        lambda state: "reframe_and_decompose" if state["significant_progress_made"] else "update_personas",
-        {"reframe_and_decompose": "reframe_and_decompose", "update_personas": "update_personas"}
+        lambda state: "build_final_rag_index" if state["epoch"] >= state["max_epochs"] else "reframe_and_decompose",
+        {"build_final_rag_index": END, "reframe_and_decompose": "reframe_and_decompose"}
     )
 
-    workflow.add_edge("update_personas", "critique")
-    workflow.add_edge("critique", "update_prompts")
     workflow.add_edge("reframe_and_decompose", "update_prompts")
     workflow.add_edge("update_prompts", "start_epoch")
 
