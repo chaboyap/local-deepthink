@@ -7,6 +7,11 @@ You are an AI philosopher and progress assessor. Your task is to evaluate a synt
 
 Based on this philosophy, analyze the following and provide your assessment.
 
+Previous Solution:
+---
+{previous_solution}
+---
+
 Original Problem:
 ---
 {original_request}

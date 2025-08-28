@@ -28,7 +28,8 @@ def create_synthesis_node():
 
         synthesis_input = {
             "original_request": state["original_request"], 
-            "agent_solutions": json.dumps(last_layer_outputs)
+            "agent_solutions": json.dumps(last_layer_outputs),
+            "previous_solution": state.get("previous_solution", "")
         }
         
         # For greater visibility of input to Synthesis model. 

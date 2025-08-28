@@ -87,6 +87,10 @@ You must reply in the following JSON format: "original_problem": "An evolved sub
             return AIMessage(content=code_solution)
         elif "you are a critique agent" in prompt or "you are a senior emeritus manager" in prompt or "CTO" in prompt:
             return AIMessage(content="This is a constructive code critique. The solution lacks proper error handling and the function names are not descriptive enough. Consider refactoring for clarity.")
+        
+        elif "Lazy Manager"  in prompt:
+            return AIMessage(content="This is a constructive code critique. The solution lacks proper error handling and the function names are not descriptive enough. Consider refactoring for clarity.")
+
         elif '<system-role>' in prompt:
             content = f"""You are a CTO providing a technical design review...
 Original Request: {{original_request}}
@@ -118,12 +122,33 @@ Generate your code-focused critique for the team:"""
         elif "you are a master strategist and problem decomposer" in prompt:
             sub_problems = ["Design the database schema for user accounts.", "Implement the REST API endpoint for user authentication.", "Develop the frontend login form component.", "Write unit tests for the authentication service."]
             return AIMessage(content=json.dumps({"sub_problems": sub_problems}))
-        elif "you are an ai philosopher and progress assessor" in prompt or "CTO" in prompt or "assessor" in prompt or "significant progress" in prompt:
-            content = json.dumps({
-                "reasoning": "The mock code is runnable and addresses the core logic, which constitutes significant progress. The next step is to add features.",
-                "significant_progress": True
-            })
-            return AIMessage(content=content)
+        
+        elif """your task is to evaluate a synthesized solution against an original problem and determine if "significant progress" has been made. "significant progress" is a rigorous standard that goes beyond mere correctness. your assessment must be based on the following four pillars:""" in prompt:
+            decision = random.randint(0, 1) 
+            if decision == 0:
+                return AIMessage(content=json.dumps({
+                    "reasoning": "The mock code is not runnable and does not address the core logic, which does not constitute significant progress.",
+                    "significant_progress": False
+                }))
+            else:
+                return AIMessage(content=json.dumps({
+                    "reasoning": "The mock code is runnable and addresses the core logic, which constitutes significant progress. The next step is to add features.",
+                    "significant_progress": True
+                }))
+
+        elif "you are an ai philosopher and progress assessor" in prompt:
+            decision = random.randint(0, 1)
+            if decision == 0:
+                return AIMessage(content=json.dumps({
+                    "reasoning": "The mock code is runnable but does not address the core logic. The next step is to fix the logic.",
+                    "significant_progress": False
+                }))
+            else:
+                return AIMessage(content=json.dumps({
+                    "reasoning": "The mock code is runnable and addresses the core logic, which constitutes significant progress. The next step is to add features.",
+                    "significant_progress": True
+                }))
+        
         elif "you are a strategic problem re-framer" in prompt:
             content = json.dumps({
                 "new_problem": "The authentication API is complete. The new, more progressive problem is to build a scalable, real-time notification system that integrates with it."
@@ -254,14 +279,42 @@ class MockLLM(Runnable):
         # NOTE: All logic from the original file is now correctly placed here.
         if "you are a helpful ai assistant" in prompt:
             return AIMessage(content="This is a mock streaming response for the RAG chat in debug mode.")
-        elif "runnable code block (e.g., Python, JavaScript, etc.)." in prompt:
-            return AIMessage(content="no")
-        elif "you are an ai philosopher and progress assessor" in prompt or "CTO" in prompt or "assessor" in prompt or "significant progress" in prompt:
-             content = json.dumps({
+        
+        elif "Lazy Manager"  in prompt:
+            return AIMessage(content="This is a constructive code critique. The solution lacks proper error handling and the function names are not descriptive enough. Consider refactoring for clarity.")
+
+        elif "you are an expert computational astrologer" in prompt:
+            return AIMessage(content=random.choice(reactor_list))
+
+        elif """your task is to evaluate a synthesized solution against an original problem and determine if "significant progress" has been made. "significant progress" is a rigorous standard that goes beyond mere correctness. your assessment must be based on the following four pillars:""" in prompt:
+            decision = random.randint(0, 1) 
+            if decision == 0:
+                return AIMessage(content=json.dumps({
+                    "reasoning": "The mock code is not runnable and does not address the core logic, which does not constitute significant progress.",
+                    "significant_progress": False
+                }))
+            else:
+                return AIMessage(content=json.dumps({
                 "reasoning": "The mock code is runnable and addresses the core logic, which constitutes significant progress. The next step is to add features.",
                 "significant_progress": True
-            })
-             return AIMessage(content=content)
+            }))
+
+        elif "runnable code block (e.g., Python, JavaScript, etc.)." in prompt:
+            return AIMessage(content="no")
+        
+        elif "you are an ai philosopher and progress assessor" in prompt:
+            decision = random.randint(0, 1)
+            if decision == 0:
+                return AIMessage(content=json.dumps({
+                "reasoning": "The mock code is runnable but does not address the core logic. The next step is to fix the logic.",
+                "significant_progress": False
+            }))
+            else:
+                return AIMessage(content=json.dumps({
+                "reasoning": "The mock code is runnable and addresses the core logic, which constitutes significant progress. The next step is to add features.",
+                "significant_progress": True
+            }))
+
         elif "<updater_instructions>" in prompt:
             content = f"""
                 You are a cynical lazy manager.
@@ -333,12 +386,18 @@ You must reply in the following JSON format: "original_problem": "An evolved sub
             num = int(num_match.group(1)) if num_match else 5
             sub_problems = [f"This is mock sub-problem #{i+1} for the main request." for i in range(num)]
             return AIMessage(content=json.dumps({"sub_problems": sub_problems}))
-        elif "you are an ai philosopher and progress assessor" in prompt:
-             content = json.dumps({
-                "reasoning": "The mock solution is novel and shows progress, so we will re-frame.",
-                "significant_progress": random.choice([True, False])
-            })
-             return AIMessage(content=content)
+        elif "you are an ai philosopher and progress assessor" in prompt or "cto" in prompt or "assessor" in prompt or "significant progress" in prompt or "pepon" in prompt:
+             decision = random.randint(0, 1) 
+             if decision == 0:
+                 return AIMessage(content=json.dumps({
+                     "reasoning": "The mock code is not runnable and does not address the core logic, which does not constitute significant progress.",
+                     "significant_progress": False
+                 }))
+             else:
+                 return AIMessage(content=json.dumps({
+                 "reasoning": "The mock code is runnable and addresses the core logic, which constitutes significant progress. The next step is to add features.",
+                 "significant_progress": True
+             }))
         elif "you are a strategic problem re-framer" in prompt:
              content = json.dumps({
                 "new_problem": "Based on the success of achieving '42', the new, more progressive problem is to find the question to the ultimate answer."

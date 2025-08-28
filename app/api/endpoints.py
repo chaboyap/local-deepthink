@@ -90,6 +90,7 @@ async def build_and_run_graph(payload: GraphRunPayload):
         logging.info("--- [SETUP] Graph workflow built successfully.")
         
         initial_state = {
+            "previous_solution": "",
             "chat_history": [],
             "original_request": user_prompt,
             "current_problem": user_prompt,
@@ -320,7 +321,7 @@ async def harvest_session(payload: dict = Body(...)):
 @router.get('/stream_log')
 async def stream_log(request: Request):
     """
-    (REFACTORED) Streams log messages to the client using Server-Sent Events.
+    Streams log messages to the client using Server-Sent Events.
     This endpoint simply retrieves pre-formatted JSON strings from the
     log queue and yields them to the client. The UIJSONFormatter is responsible
     for creating the structured payloads.

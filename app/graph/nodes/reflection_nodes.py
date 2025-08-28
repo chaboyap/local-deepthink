@@ -19,6 +19,7 @@ def create_progress_assessor_node():
         logging.info("--- [REFLECTION] Assessing Progress ---")
         final_solution = state.get("final_solution")
         llm, llm_config = state["llm"], state["llm_config"]
+        previous_solution = state.get("previous_solution", "")
 
         if not final_solution or final_solution.get("error"):
             logging.warning("No valid solution to assess. Defaulting to no significant progress.")
@@ -34,7 +35,8 @@ def create_progress_assessor_node():
                     input_data={
                         "original_request": state["original_request"],
                         "proposed_solution": json.dumps(final_solution),
-                        "execution_context": ""
+                        "execution_context": "",
+                        "previous_solution": previous_solution
                     },
                     pydantic_schema=AssessmentOutput
                 ),
@@ -128,7 +130,7 @@ def create_update_personas_node(llm):
             # 4. Asynchronously generate the new prompts
             new_critique_prompt, new_assessor_prompt, new_individual_prompt = await asyncio.gather(
                 critique_updater_chain.ainvoke({"reactor_prompts": reactor_prompts}),
-                assessor_updater_chain.ainvoke({"reactor_prompts": reactor_prompts}),
+                assessor_updater_chain.ainvoke({"reactor_prompts": reactor_prompts, "previous_solution": state.get("previous_solution", "")}),
                 individual_updater_chain.ainvoke({"reactor_prompts": reactor_prompts})
             )
             
@@ -260,6 +262,13 @@ def create_update_agent_prompts_node():
             logging.warning(f"{update_failure_count}/{total_agents} agents failed to update prompts.")
         
         logging.info(f"--- Finished Epoch {state.get('epoch', 0)}. ---")
-        # Clear out state for the next epoch
-        return { "all_layers_prompts": prompts_copy, "agent_outputs": {}, "critiques": {}, "final_solution": None }
+        # Clear out state for the next epoch and pass the final solution to the next epoch
+        previous_solution_str = json.dumps(state.get("final_solution")) if state.get("final_solution") else ""
+        return { 
+            "all_layers_prompts": prompts_copy, 
+            "agent_outputs": {}, 
+            "critiques": {}, 
+            "previous_solution": previous_solution_str,
+            "final_solution": None
+        }
     return update_prompts_node

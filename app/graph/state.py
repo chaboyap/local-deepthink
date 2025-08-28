@@ -11,6 +11,7 @@ class GraphState(TypedDict):
     Represents the state of the graph. It's passed between nodes and updated
     at each step of the execution.
     """
+    previous_solution: str
     current_problem: str
     original_request: str
     decomposed_problems: Dict[str, str]

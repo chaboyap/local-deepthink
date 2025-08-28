@@ -27,6 +27,10 @@
             - **Forward Momentum**: Does the solution not just solve the immediate problem, but also open up new, more advanced questions or avenues of exploration?
         #Input format
             You will be provided with the following inputs for your analysis:
+            Previous solution:
+            ---
+            {{previous_solution}}
+            ---
             Original Problem:
             ---
             {{original_request}}
