@@ -127,7 +127,6 @@ llm_providers:
     # OPTION 1: Google Gemini (Recommended Default)
     provider: "gemini"
     model_name: "gemini-1.5-pro"
-    # This MUST be true for non-code synthesis and reliable agent fallbacks to work.
     enable_structured_output: true
     config:
       top_p: 0.95

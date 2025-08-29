@@ -101,8 +101,10 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
 
     layer_node_ids = [[f"agent_{i}_{j}" for j in range(num_agents_per_layer)] for i in range(cot_trace_depth)]
 
-    # Start all nodes in the first layer in parallel
-    workflow.add_edge("start_epoch", layer_node_ids[0])
+    # The start_epoch node fans out to trigger every agent in the first layer.
+    first_layer_nodes = layer_node_ids[0]
+    for node_id in first_layer_nodes:
+        workflow.add_edge("start_epoch", node_id)
 
     # Connect subsequent layers
     for i in range(cot_trace_depth - 1):

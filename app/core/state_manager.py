@@ -42,23 +42,29 @@ class SessionManager:
         """
         return self.sessions.get(session_id)
 
-    def update_session_state(self, session_id: str, node_output: Dict[str, Any]):
+    async def update_session_state(self, session_id: str, node_output: Dict[str, Any]):
         """
-        Updates the state of a specific session.
-        This now operates on the nested 'state' dictionary.
-        NOTE: This method should be called from within a lock in the endpoint.
+        Atomically updates the state of a specific session.
+        This method is now thread-safe by acquiring the session's lock.
         """
         session = self.get_session(session_id)
         if not session:
             return
 
-        # Operate on the nested state dictionary
-        state = session["state"]
-        for key, value in node_output.items():
-            if key in ['agent_outputs', 'memory'] and isinstance(state.get(key), dict):
-                state[key].update(value)
-            else:
-                state[key] = value
+        async with session["lock"]:
+            # Operate on the nested state dictionary
+            state = session["state"]
+            for key, value in node_output.items():
+                if key in ['agent_outputs', 'memory', 'critiques'] and isinstance(state.get(key), dict):
+                    # Use update for appending to dictionaries
+                    state[key].update(value)
+                elif key == 'all_rag_documents' and isinstance(value, list):
+                    # Ensure we are extending lists, not replacing them
+                    if state.get(key) is None or not isinstance(state.get(key), list):
+                        state[key] = []
+                    state[key].extend(value)
+                else:
+                    state[key] = value
 
     def set_final_state(self, session_id: str, final_state: Dict[str, Any]):
         """Sets the final state of a session after the graph run completes."""
@@ -74,8 +80,6 @@ class SessionManager:
     def get_report(self, session_id: str) -> Dict[str, str] | None:
         """Retrieves a final report by session ID."""
         return self.final_reports.get(session_id)
-
-    # The `log` method has been removed.
 
 # Global instance
 session_manager = SessionManager()

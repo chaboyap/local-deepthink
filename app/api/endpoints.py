@@ -29,7 +29,6 @@ from app.services.prompt_service import prompt_service
 from app.api.schemas import GraphRunPayload, GraphRunParams
 from app.utils.exceptions import AgentExecutionError
 from app.utils.mock_llms import CoderMockLLM, MockLLM
-from app.utils.json_utils import clean_and_parse_json
 
 
 router = APIRouter()
@@ -108,6 +107,7 @@ async def build_and_run_graph(payload: GraphRunPayload):
             "params": payload.params,
             "agent_outputs": {},
             "memory": {},
+            "critiques": {},
             "final_solution": None,
             "perplexity_history": [],
             "raptor_index": None,
@@ -145,7 +145,7 @@ async def build_and_run_graph(payload: GraphRunPayload):
                 for node_name, node_output in output.items():
                     logging.info(f"--- Node Finished: {node_name} ---")
                     if isinstance(node_output, dict) and node_output:
-                        session_manager.update_session_state(session_id, node_output)
+                        await session_manager.update_session_state(session_id, node_output)
         
         except AgentExecutionError as e:
             error_message = f"Execution halted due to a critical failure in agent '{e.node_id}'. Reason: {e.message}"
@@ -414,56 +414,71 @@ async def harvest_session(payload: dict = Body(...)):
     session_object = session_manager.get_session(session_id)
     if not session_object:
         return JSONResponse(content={"error": "Invalid session ID"}, status_code=404)
-    
-    async with session_object["lock"]:
-        try:
+
+    try:
+        logging.info("--- [HARVEST] Initiating Final Harvest Process ---")
+
+        state_for_graph_run = {}
+        # Atomically read state, update it with chat history, and get a copy for the graph run
+        async with session_object["lock"]:
             state = session_object["state"]
-            logging.info("--- [HARVEST] Initiating Final Harvest Process ---")
             chat_history = state.get("chat_history", [])
-            
+
             if chat_history:
-                chat_docs = [Document(page_content=f"User: {chat_history[i-1]['content']}\nAI: {turn['content']}", metadata={"source": "chat", "turn": i//2})
-                             for i, turn in enumerate(chat_history) if turn['role'] == 'ai']
-                
+                chat_docs = [
+                    Document(page_content=f"User: {chat_history[i-1]['content']}\nAI: {turn['content']}",
+                             metadata={"source": "chat", "turn": i // 2})
+                    for i, turn in enumerate(chat_history) if turn['role'] == 'ai'
+                ]
+                # Directly mutate the state under lock
+                if "all_rag_documents" not in state or not isinstance(state["all_rag_documents"], list):
+                    state["all_rag_documents"] = []
                 state["all_rag_documents"].extend(chat_docs)
-                session_manager.update_session_state(session_id, {"all_rag_documents": state["all_rag_documents"]})
 
-            # Create a mini-graph for the harvest process to run asynchronously
-            harvest_workflow = StateGraph(GraphState)
+            # Get a snapshot of the state to run the graph with, ensuring it has the chat docs
+            state_for_graph_run = state.copy()
             
-            update_rag_node = create_update_rag_index_node(state["summarizer_llm"], state["embeddings_model"])
-            harvest_workflow.add_node("update_rag_index_final", lambda s: update_rag_node(s, end_of_run=True))
+        # Create a mini-graph for the harvest process to run asynchronously
+        harvest_workflow = StateGraph(GraphState)
 
-            num_questions = int(state["params"].num_questions_for_harvest)
-            harvest_node = create_final_harvest_node(state["llm"], state["synthesizer_llm"], num_questions)
-            harvest_workflow.add_node("final_harvest", harvest_node)
+        update_rag_node = create_update_rag_index_node(state_for_graph_run["summarizer_llm"], state_for_graph_run["embeddings_model"])
+        harvest_workflow.add_node("update_rag_index_final", lambda s: update_rag_node(s, end_of_run=True))
 
-            harvest_workflow.set_entry_point("update_rag_index_final")
-            harvest_workflow.add_edge("update_rag_index_final", "final_harvest")
-            harvest_workflow.add_edge("final_harvest", END)
-            
-            harvest_graph = harvest_workflow.compile()
-            
-            logging.info("--- [HARVEST] Executing Harvest Graph... ---")
-            async for output in harvest_graph.astream(state):
-                for node_name, node_output in output.items():
-                    logging.info(f"--- [HARVEST] Node Finished: {node_name} ---")
-                    if isinstance(node_output, dict) and node_output:
-                        session_manager.update_session_state(session_id, node_output)
-            
-            updated_session_object = session_manager.get_session(session_id)
-            academic_papers = updated_session_object["state"].get("academic_papers", {})
+        num_questions = int(state_for_graph_run["params"].num_questions_for_harvest)
+        harvest_node = create_final_harvest_node(state_for_graph_run["llm"], state_for_graph_run["synthesizer_llm"], num_questions)
+        harvest_workflow.add_node("final_harvest", harvest_node)
 
-            if academic_papers:
-                session_manager.store_report(session_id, academic_papers)
-                logging.info(f"SUCCESS: Final report with {len(academic_papers)} papers created for session {session_id}.")
-            
-            return JSONResponse(content={"message": "Harvest complete."})
+        harvest_workflow.set_entry_point("update_rag_index_final")
+        harvest_workflow.add_edge("update_rag_index_final", "final_harvest")
+        harvest_workflow.add_edge("final_harvest", END)
         
-        except Exception as e:
-            error_message = f"An error occurred during harvest: {e}"
-            logging.error(f"--- FATAL ERROR DURING HARVEST ---", exc_info=True)
-            return JSONResponse(content={"message": error_message, "traceback": traceback.format_exc()}, status_code=500)
+        harvest_graph = harvest_workflow.compile()
+        
+        logging.info("--- [HARVEST] Executing Harvest Graph... ---")
+        async for output in harvest_graph.astream(state_for_graph_run):
+            for node_name, node_output in output.items():
+                logging.info(f"--- [HARVEST] Node Finished: {node_name} ---")
+                if isinstance(node_output, dict) and node_output:
+                    # Use the new thread-safe method for state updates
+                    await session_manager.update_session_state(session_id, node_output)
+        
+        # After the run, get the final state to find the report
+        updated_session_object = session_manager.get_session(session_id)
+        if not updated_session_object:
+             logging.error(f"Session {session_id} expired during harvest")
+             return JSONResponse(content={"message": "Session expired during harvest"}, status_code=500)
+
+        academic_papers = updated_session_object["state"].get("academic_papers", {})
+        if academic_papers:
+            session_manager.store_report(session_id, academic_papers)
+            logging.info(f"SUCCESS: Final report with {len(academic_papers)} papers created for session {session_id}.")
+        
+        return JSONResponse(content={"message": "Harvest complete."})
+    
+    except Exception as e:
+        error_message = f"An error occurred during harvest: {e}"
+        logging.error(f"--- FATAL ERROR DURING HARVEST ---", exc_info=True)
+        return JSONResponse(content={"message": error_message, "traceback": traceback.format_exc()}, status_code=500)
 
 @router.get('/stream_log')
 async def stream_log(request: Request):

@@ -10,8 +10,6 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import RunnableConfig
 
-from app.agents.personas import reactor_list
-
 class CoderMockLLM(Runnable):
     """A mock LLM for debugging that returns instant, pre-canned CODE responses."""
 

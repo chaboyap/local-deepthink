@@ -249,6 +249,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
+    const runInference = async (payload) => {
+        resetUIForNewRun(false); // Use a non-full reset
+        addLogMessage("--- Starting inference-only run... ---", "#00aaff");
+
+        try {
+            const response = await fetch('/run_inference_from_state', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(`Server Error (${response.status}): ${result.message || 'Unknown error'}`);
+            }
+            
+            if ('code_solution' in result) {
+                elements.codeOutput.textContent = result.code_solution.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+                Prism.highlightElement(elements.codeOutput);
+                elements.codeReasoning.textContent = result.reasoning;
+                elements.codeResultContainer.classList.remove('hidden');
+                addLogMessage("--- Inference run complete. Result displayed. ---", "lightgreen");
+            } else {
+                 addLogMessage(`Inference run finished with message: ${result.message}`, 'yellow');
+            }
+            
+        } catch (error) {
+            addLogMessage(`FATAL INFERENCE ERROR: ${error.message}`, '#FF5555');
+        } finally {
+            finishRun(); // Reset the UI correctly
+            // Important: Don't set a session ID, as inference is stateless
+            state.currentSessionId = null; 
+            elements.exportQnnButton.classList.add('hidden');
+        }
+    };
+    
     const handleChat = async (e, input, container, endpoint) => {
         e.preventDefault();
         const message = input.value.trim();
@@ -421,7 +457,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!state.importedStateContent) { alert("No QNN file loaded."); return; }
             const newPrompt = prompt("Enter the prompt for the inference run:", document.getElementById('prompt').value);
             if (!newPrompt || !newPrompt.trim()) { alert("A prompt is required."); return; }
-            runGraph({ imported_state: JSON.parse(state.importedStateContent), prompt: newPrompt }, '/run_inference_from_state');
+            runInference({ imported_state: JSON.parse(state.importedStateContent), prompt: newPrompt });
         });
 
         elements.exportQnnButton.addEventListener('click', () => {
