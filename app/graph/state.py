@@ -26,6 +26,7 @@ class GraphState(TypedDict):
     all_layers_prompts: List[List[str]]
     agent_outputs: Annotated[dict, lambda a, b: {**a, **b}]
     memory: Annotated[dict, lambda a, b: {**a, **b}]
+    critiques: Annotated[dict, lambda a, b: {**a, **b}]
     final_solution: dict
     perplexity_history: List[float]
     raptor_index: Optional[RAPTOR]

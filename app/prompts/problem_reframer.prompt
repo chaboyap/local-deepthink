@@ -15,4 +15,13 @@ The Breakthrough Solution:
 {final_solution}
 ---
 
+Additionally, a panel of experts provided the following critiques of the solution.
+You MUST use this feedback heavily to inform your new problem statement.
+A high learning_rate means you should make radical changes based on the critiques.
+
+Expert Critiques:
+---
+{critiques}
+---
+
 Formulate the new, more advanced problem.

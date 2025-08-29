@@ -45,7 +45,11 @@ hyperparameters:
   # (0.1 - 2.0) Controls how much an agent's 'Skills' are influenced by its 'Attributes'.
   # Higher values result in skills that are more stylistic extensions of the agent's persona.
   density: 1.0
-  
+
+  # (0.0 - 2.0) A value that determines how much the reflection nodes are influenced by critiques.
+  # Higher values encourage more significant changes based on feedback.
+  learning_rate: 1.0
+
   # The default prompt that will be pre-filled in the UI.
   default_prompt: "Create a simple game of Conway's game of life in python, no GUI, just console."
   
@@ -62,6 +66,21 @@ hyperparameters:
   
   # The time-to-live for a session in seconds. Default is 2 days (172800).
   session_ttl_seconds: 172800
+  
+  # --- Backwards Pass / Critique Hyperparameters ---
+  # Defines the personas of agents who will critique the synthesized solution at the end of each epoch.
+  # If this list is empty, the critique step will be skipped.
+  critique_agents:
+    - name: "CTO"
+      persona: |
+        You are a Chief Technology Officer providing a technical design review.
+        Your critique must be pragmatic, focusing on scalability, security, maintainability, and potential integration challenges.
+        Conclude with a single, sharp, actionable recommendation.
+    - name: "Lazy Manager"
+      persona: |
+        You are a cynical, apathetic manager focused only on the bottom line.
+        Your critique should be brief, slightly dismissive, and question the business value or necessity of the proposed solution.
+        Conclude with a single, sharp, reflective question that challenges the team's assumptions about the problem's importance.
 
 # -----------------------------------------------------------------------------
 # LLM Provider Configuration
@@ -75,7 +94,7 @@ llm_providers:
     # OPTION 1: Google Gemini (Recommended Default)
     # Uses the official `google-genai` SDK. Requires a GOOGLE_API_KEY in your .env file.
     provider: "gemini"
-    model_name: "gemini-2.5-flash"
+    model_name: "gemini-1.5-flash"
     enable_structured_output: false
     config:
       temperature: 1.00
@@ -126,7 +145,7 @@ llm_providers:
   summarizer_llm:
     # OPTION 1: Google Gemini (Recommended Default)
     provider: "gemini"
-    model_name: "gemini-2.5-flash"
+    model_name: "gemini-1.5-flash"
     config:
       max_output_tokens: 8192
       temperature: 0.2 # Low temperature for more deterministic and consistent summaries.
@@ -136,7 +155,7 @@ llm_providers:
 #    # This example uses a custom model created for a larger context window.
 #    # See the project's README or documentation for instructions on how to create this model.
 #    provider: "ollama"
-#    model_name: "qwen3:1.7b-largectx"
+#    model_name: "qwen2:1.5b-instruct" # a smaller model for summarization
 #    config:
 #      temperature: 0.2
 

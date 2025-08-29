@@ -18,6 +18,14 @@ def create_reframe_and_decompose_node():
         logging.info("--- [REFLECTION] Re-framing Problem for Next Epoch ---")
         llm, llm_config = state["llm"], state["llm_config"]
         timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
+
+        # Get critiques from the state to pass to the reframer prompt
+        critiques = state.get("critiques", {})
+        critique_str = "No critiques were provided for this epoch."
+        if critiques:
+            critique_str = "\n\n".join(
+                f"--- Critique from {name} ---\n{text}" for name, text in critiques.items()
+            )
         
         try:
             new_problem_obj = await asyncio.wait_for(
@@ -28,7 +36,8 @@ def create_reframe_and_decompose_node():
                     input_data={
                         "original_request": state["original_request"],
                         "final_solution": json.dumps(state.get("final_solution")),
-                        "current_problem": state.get("current_problem")
+                        "current_problem": state.get("current_problem"),
+                        "critiques": critique_str # Pass critiques to the prompt
                     },
                     pydantic_schema=NewProblemOutput
                 ),

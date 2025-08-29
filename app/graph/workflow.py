@@ -8,7 +8,7 @@ from app.graph.state import GraphState
 from app.graph.nodes import (
     create_agent_node, create_synthesis_node, create_archive_epoch_outputs_node,
     create_update_rag_index_node, create_metrics_node,
-    create_reframe_and_decompose_node,
+    create_reframe_and_decompose_node, create_critique_node,
     create_update_agent_prompts_node, create_code_execution_node
 )
 from app.services.agent_factory import AgentFactory
@@ -66,7 +66,9 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     def start_epoch(state: GraphState):
         current_epoch_display = state['epoch']
         logging.info(f"==================== STARTING EPOCH {current_epoch_display + 1} / {state['max_epochs']} ====================")
-        return {}
+        # Reset critiques to ensure no data bleeds between epochs.
+        return {"critiques": {}}
+    
     workflow.add_node("start_epoch", start_epoch)
     workflow.set_entry_point("start_epoch")
 
@@ -77,6 +79,17 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     
     workflow.add_node("synthesis", create_synthesis_node())
     if is_code: workflow.add_node("code_execution", create_code_execution_node())
+
+    # Add critique nodes if they are defined in the config
+    critique_configs = settings.hyperparameters.critique_agents
+    critique_node_ids = []
+    if critique_configs:
+        logging.info(f"--- [SETUP] Creating {len(critique_configs)} critique agents. ---")
+        for config in critique_configs:
+            node_id = f"critique_{config.name.replace(' ', '_')}"
+            workflow.add_node(node_id, create_critique_node(config))
+            critique_node_ids.append(node_id)
+            
     workflow.add_node("archive_epoch_outputs", create_archive_epoch_outputs_node())
     update_rag_node_func = create_update_rag_index_node(summarizer_llm, embeddings_model)
     workflow.add_node("update_rag_index", update_rag_node_func)
@@ -97,11 +110,15 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
 
     workflow.add_edge(layer_node_ids[-1], "synthesis")
 
-    if is_code:
-        workflow.add_edge("synthesis", "code_execution")
-        workflow.add_edge("code_execution", "archive_epoch_outputs")
-    else:
-        workflow.add_edge("synthesis", "archive_epoch_outputs")
+    # Determine the exit node of the forward pass
+    forward_pass_exit_node = "code_execution" if is_code else "synthesis"
+    
+    # If critique agents are configured, route the flow through them
+    if critique_node_ids:
+        workflow.add_edge(forward_pass_exit_node, critique_node_ids)
+        workflow.add_edge(critique_node_ids, "archive_epoch_outputs")
+    else: # Otherwise, connect directly to the archival step
+        workflow.add_edge(forward_pass_exit_node, "archive_epoch_outputs")
 
     workflow.add_edge("archive_epoch_outputs", "update_rag_index")
     workflow.add_edge("update_rag_index", "metrics")
@@ -118,8 +135,7 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
         
         # If code execution succeeded OR it's not a code request, use the standard epoch check
         if state["epoch"] >= state["max_epochs"]:
-            logging.info(f"LOG: Final epoch ({state['epoch']}) finished. Proceeding to build final report.")
-            # For non-code tasks, there's no chat, so we end. For code-tasks that succeed on the last epoch, we also end.
+            logging.info(f"LOG: Final epoch ({state['epoch']}) finished. Proceeding to end state.")
             return END
         else:
             return "reframe_and_decompose"

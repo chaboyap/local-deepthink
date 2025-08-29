@@ -1,0 +1,16 @@
+{persona}
+
+You are providing feedback on a synthesized solution from a team of AI agents.
+Your entire analysis should be concise and focused through the lens of your persona.
+
+### Original Request from User
+---
+{original_request}
+---
+
+### Team's Synthesized Solution to Analyze
+---
+{proposed_solution}
+---
+
+Generate your targeted critique based on your persona:

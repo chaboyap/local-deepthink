@@ -6,3 +6,4 @@ from .reflection_nodes import (create_reframe_and_decompose_node,
                                create_update_agent_prompts_node)
 from .synthesis_nodes import create_final_harvest_node, create_synthesis_node
 from .execution_nodes import create_code_execution_node
+from .critique_node import create_critique_node
