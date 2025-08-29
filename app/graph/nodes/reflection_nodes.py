@@ -39,7 +39,8 @@ def create_reframe_and_decompose_node():
                         "current_problem": state.get("current_problem"),
                         "critiques": critique_str # Pass critiques to the prompt
                     },
-                    pydantic_schema=NewProblemOutput
+                    pydantic_schema=NewProblemOutput,
+                    context_identifier=f"ReframeNode:Epoch{state.get('epoch', 0)}"
                 ),
                 timeout=timeout
             )

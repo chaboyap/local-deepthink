@@ -36,7 +36,8 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
                 provider_config=llm_config,
                 prompt_template=prompt_service.get_template("problem_decomposition"),
                 input_data={"problem": user_prompt, "num_sub_problems": total_agents},
-                pydantic_schema=DecompositionOutput
+                pydantic_schema=DecompositionOutput,
+                context_identifier="Workflow:InitialDecomposition"
             ),
             timeout=timeout
         )
@@ -102,15 +103,23 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     layer_node_ids = [[f"agent_{i}_{j}" for j in range(num_agents_per_layer)] for i in range(cot_trace_depth)]
 
     # The start_epoch node fans out to trigger every agent in the first layer.
-    first_layer_nodes = layer_node_ids[0]
-    for node_id in first_layer_nodes:
-        workflow.add_edge("start_epoch", node_id)
+    for start_node in layer_node_ids[0]:
+        workflow.add_edge("start_epoch", start_node)
 
     # Connect subsequent layers
     for i in range(cot_trace_depth - 1):
-        workflow.add_edge(layer_node_ids[i], layer_node_ids[i+1])
+        source_nodes = layer_node_ids[i]
+        destination_nodes = layer_node_ids[i+1]
+        # We must iterate and create an edge from every source node
+        # to every destination node to correctly model the layer dependency.
+        for source in source_nodes:
+            for dest in destination_nodes:
+                workflow.add_edge(source, dest)
 
-    workflow.add_edge(layer_node_ids[-1], "synthesis")
+    # Connect last layer to synthesis
+    # Each node in the final layer must be connected to the synthesis node.
+    for final_agent_node in layer_node_ids[-1]:
+        workflow.add_edge(final_agent_node, "synthesis")
 
     # Determine the exit node of the forward pass
     forward_pass_exit_node = "code_execution" if is_code else "synthesis"

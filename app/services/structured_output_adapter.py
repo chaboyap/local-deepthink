@@ -40,7 +40,8 @@ async def get_structured_output(
     prompt_template: str,
     input_data: dict,
     pydantic_schema: Type[BaseModel],
-    max_retries: int = 2
+    context_identifier: str = "Unknown",
+    max_retries: int = 4
 ) -> Optional[BaseModel]:
     """
     This function is the robust adapter for Structured Data Endpoints.
@@ -52,24 +53,25 @@ async def get_structured_output(
         # --- STRATEGY 1: Attempt Native Tool Calling / Structured Output ---
         if provider_config.enable_structured_output:
             try:
-                logging.info(f"Attempting structured output via native tool calling for {pydantic_schema.__name__} (Attempt {attempt+1}/{max_retries}).")
+                logging.info(f"[{context_identifier}] Attempting native structured output for {pydantic_schema.__name__} (Attempt {attempt+1}/{max_retries}).")
                 structured_llm = llm.with_structured_output(pydantic_schema)
                 prompt = ChatPromptTemplate.from_template(prompt_template)
                 chain = prompt | structured_llm
                 result = await chain.ainvoke(input_data)
                 if result:
+                     logging.info(f"[{context_identifier}] SUCCESS: Native structured output for {pydantic_schema.__name__} (Attempt {attempt+1}/{max_retries}).")
                      return result # Success!
                 # If result is None, fall through to the next strategy
-                logging.warning(f"Native tool calling returned None for {pydantic_schema.__name__}. Falling back.")
+                logging.warning(f"[{context_identifier}] Native structured output returned None for {pydantic_schema.__name__}. Falling back to delimiter method.")
             except Exception as e:
-                logging.warning(f"Native tool calling failed (Attempt {attempt+1}/{max_retries}): {e}. Falling back to delimiter method.")
+                logging.warning(f"[{context_identifier}] Native structured output failed (Attempt {attempt+1}/{max_retries}): {e}. Falling back to delimiter method.")
                 last_exception = e
 
         # --- STRATEGY 2: Fallback to Dynamic Structured Delimiters ---
         response_str = None
         full_prompt_str = ""
         try:
-            logging.info(f"Attempting structured output via dynamic delimiters for {pydantic_schema.__name__} (Attempt {attempt+1}/{max_retries}).")
+            logging.info(f"[{context_identifier}] Attempting delimiter structured output for {pydantic_schema.__name__} (Attempt {attempt+1}/{max_retries}).")
             
             # Delimiter instruction building logic
             fields = pydantic_schema.model_fields
@@ -108,7 +110,8 @@ You MUST format your response using ONLY the following structure. Do not add any
 """
 
             # This is the definitive log of the exact prompt sent to the LLM.
-            logging.info(f"RAW_LLM_INPUT_FOR_DEBUG ({pydantic_schema.__name__}):\n---BEGIN INPUT---\n{full_prompt_str}\n---END INPUT---")
+            logging.info(
+                    f"[{context_identifier}] RAW_LLM_INPUT_FOR_DEBUG ({pydantic_schema.__name__}):\n---BEGIN INPUT---\n{full_prompt_str}\n---END INPUT---")
             
             final_prompt = ChatPromptTemplate.from_template("{final_prompt_str}")
             chain = final_prompt | llm | StrOutputParser()
@@ -116,7 +119,8 @@ You MUST format your response using ONLY the following structure. Do not add any
 
             # THE 'BLACK BOX' LOGGING IS INSERTED *BEFORE* ANY PARSING ATTEMPT.
             # THIS ENSURES WE CAPTURE THE RAW DATA REGARDLESS OF THE FAILURE MODE.
-            logging.info(f"RAW_LLM_OUTPUT_FOR_DEBUG ({pydantic_schema.__name__}):\n---BEGIN RAW---\n{response_str}\n---END RAW---")
+            logging.info(
+                    f"[{context_identifier}] RAW_LLM_OUTPUT_FOR_DEBUG ({pydantic_schema.__name__}):\n---BEGIN RAW---\n{response_str}\n---END RAW---")
 
             parsed_data = _parse_delimiter_output(response_str, pydantic_schema)
             logging.info(f"Pre-validation data for {pydantic_schema.__name__}: {parsed_data}")
@@ -124,17 +128,19 @@ You MUST format your response using ONLY the following structure. Do not add any
             return validated_output
 
         except (ValidationError, Exception) as e:
-            # ON FAILURE, THE LOG NOW INCLUDES THE RAW RESPONSE STRING THAT CAUSED THE EXCEPTION.
-            error_message = f"Delimiter-based structured output failed on attempt {attempt+1}/{max_retries}. Error: {e}"
+            error_message = (
+                f"[{context_identifier}] Delimiter-based structured output failed "
+                f"on attempt {attempt+1}/{max_retries}. Error: {e}"
+            )
             logging.error(
                 f"{error_message}\n"
-                f"--- FAILED RAW PROMPT ---\n{full_prompt_str}\n"
-                f"--- FAILED RAW LLM OUTPUT ---\n{response_str}\n"
+                f"[{context_identifier}] --- FAILED RAW PROMPT ---\n{full_prompt_str}\n"
+                f"[{context_identifier}] --- FAILED RAW LLM OUTPUT ---\n{response_str}\n"
                 f"--- END OF FAILURE LOG ---"
             )
             last_exception = e
             if attempt < max_retries - 1:
                 await asyncio.sleep(1)
 
-    logging.error(f"All {max_retries} attempts to get structured output for {pydantic_schema.__name__} failed. Last error: {last_exception}")
+    logging.error(f"[{context_identifier}] All {max_retries} attempts to get structured output for {pydantic_schema.__name__} failed. Last error: {last_exception}")
     return None

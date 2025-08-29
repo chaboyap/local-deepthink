@@ -26,7 +26,6 @@ def _convert_to_google_genai_contents(messages: List[BaseMessage]) -> tuple[List
             raise ValueError(f"Unsupported message type: {type(message)}")
     return contents, system_prompt
 
-
 class NativeGeminiChatWrapper(BaseChatModel):
     """
     A LangChain ChatModel wrapper for the new native `google-genai` library.
@@ -50,6 +49,7 @@ class NativeGeminiChatWrapper(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """The synchronous implementation of the chat model call."""
+        # ... function content is unchanged ...
         contents, system_prompt = _convert_to_google_genai_contents(messages)
 
         safety_settings = [
@@ -70,7 +70,6 @@ class NativeGeminiChatWrapper(BaseChatModel):
             
         config = types.GenerateContentConfig(**config_args, safety_settings=safety_settings)
 
-        # Use the synchronous SDK method
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=contents,
@@ -89,6 +88,7 @@ class NativeGeminiChatWrapper(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """The asynchronous implementation of the chat model call."""
+        # ... function content is unchanged ...
         contents, system_prompt = _convert_to_google_genai_contents(messages)
 
         safety_settings = [
@@ -109,7 +109,6 @@ class NativeGeminiChatWrapper(BaseChatModel):
             
         config = types.GenerateContentConfig(**config_args, safety_settings=safety_settings)
 
-        # Use the asynchronous SDK method
         response = await self.client.aio.models.generate_content(
             model=self.model_name,
             contents=contents,
