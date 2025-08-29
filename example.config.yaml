@@ -45,14 +45,6 @@ hyperparameters:
   # (0.1 - 2.0) Controls how much an agent's 'Skills' are influenced by its 'Attributes'.
   # Higher values result in skills that are more stylistic extensions of the agent's persona.
   density: 1.0
-
-  # Determines which agents receive individual critiques during the reflection pass.
-  # "penultimate": (Default, Efficient) Only critiques the layer directly preceding the final synthesis.
-  # "full": (Exhaustive, Slow) Critiques every agent in every layer except the last.
-  critique_strategy: "penultimate"
-
-  # (0.1 - 2.0) Controls how significantly an agent's prompt changes based on critique.
-  learning_rate: 0.3
   
   # The default prompt that will be pre-filled in the UI.
   default_prompt: "Create a simple game of Conway's game of life in python, no GUI, just console."
@@ -67,6 +59,9 @@ hyperparameters:
     agent_timeout_seconds: 300
     reflection_timeout_seconds: 300
     synthesis_timeout_seconds: 600
+  
+  # The time-to-live for a session in seconds. Default is 2 days (172800).
+  session_ttl_seconds: 172800
 
 # -----------------------------------------------------------------------------
 # LLM Provider Configuration
@@ -160,4 +155,4 @@ llm_providers:
 #    model_name: "mxbai-embed-large:latest"
     
 #  # NOTE: Kobold.cpp does not have a native embeddings endpoint.
-#  # If you use Kobold for chat, you must configure Gemini or Ollama for emb
+#  # If you use Kobold for chat, you must configure Gemini or Ollama for embeddings.

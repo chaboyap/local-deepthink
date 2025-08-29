@@ -9,7 +9,7 @@ from app.graph.nodes import (
     create_agent_node, create_synthesis_node, create_archive_epoch_outputs_node,
     create_update_rag_index_node, create_metrics_node,
     create_reframe_and_decompose_node,
-    create_update_agent_prompts_node
+    create_update_agent_prompts_node, create_code_execution_node
 )
 from app.services.agent_factory import AgentFactory
 from app.services.prompt_service import prompt_service
@@ -18,7 +18,7 @@ from app.services.schemas import DecompositionOutput
 from app.api.schemas import GraphRunParams
 from app.core.config import settings
 
-async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesizer_llm, summarizer_llm, embeddings_model):
+async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesizer_llm, summarizer_llm, embeddings_model, is_code: bool):
     """
     Builds the complete LangGraph workflow by defining nodes and their connections.
     """
@@ -29,7 +29,6 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
 
     logging.info("--- Decomposing Original Problem into Subproblems ---")
     try:
-        # Use the structured output adapter directly for decomposition.
         timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
         decomposition_result = await asyncio.wait_for(
             get_structured_output(
@@ -44,7 +43,6 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
         if not decomposition_result or not decomposition_result.sub_problems or len(decomposition_result.sub_problems) != total_agents:
             raise ValueError(f"Problem decomposition failed or produced incorrect number of sub-problems. Expected {total_agents}, got {len(decomposition_result.sub_problems) if decomposition_result else 0}.")
 
-        # Create the map of sub-problems to agent IDs.
         decomposed_problems_map = {
             f"agent_{i}_{j}": decomposition_result.sub_problems[i * num_agents_per_layer + j]
             for i in range(cot_trace_depth)
@@ -52,9 +50,8 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
         }
         logging.info(f"SUCCESS: Decomposed into {len(decomposed_problems_map)} subproblems.")
 
-        # Now, instantiate and use the AgentFactory to create the prompts.
         agent_factory = AgentFactory(llm=llm, llm_config=llm_config)
-        all_layers_prompts = await agent_factory.create_all_agent_prompts(
+        all_layers_prompts, agent_personas = await agent_factory.create_all_agent_prompts(
             decomposed_problems_map=decomposed_problems_map,
             params=params
         )
@@ -79,34 +76,61 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
             workflow.add_node(node_id, create_agent_node(node_id))
     
     workflow.add_node("synthesis", create_synthesis_node())
+    if is_code: workflow.add_node("code_execution", create_code_execution_node())
     workflow.add_node("archive_epoch_outputs", create_archive_epoch_outputs_node())
     update_rag_node_func = create_update_rag_index_node(summarizer_llm, embeddings_model)
     workflow.add_node("update_rag_index", update_rag_node_func)
     workflow.add_node("metrics", create_metrics_node(llm))
     workflow.add_node("reframe_and_decompose", create_reframe_and_decompose_node())
     workflow.add_node("update_prompts", create_update_agent_prompts_node())
-    workflow.add_node("build_final_rag_index", lambda state: update_rag_node_func(state, end_of_run=True))
     
     logging.info("--- Connecting Graph Nodes ---")
 
     layer_node_ids = [[f"agent_{i}_{j}" for j in range(num_agents_per_layer)] for i in range(cot_trace_depth)]
 
-    for node in layer_node_ids[0]:
-        workflow.add_edge("start_epoch", node)
+    # Start all nodes in the first layer in parallel
+    workflow.add_edge("start_epoch", layer_node_ids[0])
 
+    # Connect subsequent layers
     for i in range(cot_trace_depth - 1):
-        for end_node in layer_node_ids[i + 1]:
-            workflow.add_edge(layer_node_ids[i], end_node)
+        workflow.add_edge(layer_node_ids[i], layer_node_ids[i+1])
 
     workflow.add_edge(layer_node_ids[-1], "synthesis")
-    workflow.add_edge("synthesis", "archive_epoch_outputs")
+
+    if is_code:
+        workflow.add_edge("synthesis", "code_execution")
+        workflow.add_edge("code_execution", "archive_epoch_outputs")
+    else:
+        workflow.add_edge("synthesis", "archive_epoch_outputs")
+
     workflow.add_edge("archive_epoch_outputs", "update_rag_index")
     workflow.add_edge("update_rag_index", "metrics")
     
+    def assess_progress_and_decide_path(state: GraphState):
+        # First, check for code execution failure, which is a reason to loop again
+        if state.get("is_code_request") and not state.get("synthesis_execution_success", True):
+            logging.warning("Code execution failed. Attempting another epoch.")
+            if state["epoch"] >= state["max_epochs"]:
+                logging.error(f"Final epoch ({state['epoch']}) finished after code failure. Ending run.")
+                return END
+            else:
+                return "reframe_and_decompose"
+        
+        # If code execution succeeded OR it's not a code request, use the standard epoch check
+        if state["epoch"] >= state["max_epochs"]:
+            logging.info(f"LOG: Final epoch ({state['epoch']}) finished. Proceeding to build final report.")
+            # For non-code tasks, there's no chat, so we end. For code-tasks that succeed on the last epoch, we also end.
+            return END
+        else:
+            return "reframe_and_decompose"
+
     workflow.add_conditional_edges(
         "metrics",
-        lambda state: "build_final_rag_index" if state["epoch"] >= state["max_epochs"] else "reframe_and_decompose",
-        {"build_final_rag_index": END, "reframe_and_decompose": "reframe_and_decompose"}
+        assess_progress_and_decide_path,
+        {
+            "reframe_and_decompose": "reframe_and_decompose",
+            END: END
+        }
     )
 
     workflow.add_edge("reframe_and_decompose", "update_prompts")
@@ -114,16 +138,13 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
 
     graph = workflow.compile()
     
-    # This special message for the UI sent using the logging `extra` parameter.
     logging.info("Graph compiled. Visualization ready.", extra={
-        'ui_extra': {
-            'type': 'graph',
-            'data': graph.get_graph().draw_ascii()
-        }
+        'ui_extra': { 'type': 'graph', 'data': graph.get_graph().draw_ascii() }
     })
     
     initial_state_components = {
         "decomposed_problems": decomposed_problems_map,
-        "all_layers_prompts": all_layers_prompts
+        "all_layers_prompts": all_layers_prompts,
+        "agent_personas": agent_personas
     }
     return graph, initial_state_components

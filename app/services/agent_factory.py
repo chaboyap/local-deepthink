@@ -2,7 +2,8 @@
 
 import random
 import logging
-from typing import List, Dict
+import names
+from typing import List, Dict, Tuple
 from app.services.prompt_service import prompt_service
 from app.services.structured_output_adapter import get_structured_output
 from app.services.schemas import AgentAnalysisOutput
@@ -14,8 +15,9 @@ class AgentFactory:
     def __init__(self, llm, llm_config: ProviderConfig):
         self.llm = llm
         self.llm_config = llm_config
+        self.agent_personas = {}
 
-    async def create_all_agent_prompts(self, decomposed_problems_map: Dict, params: GraphRunParams) -> List[List[str]]:
+    async def create_all_agent_prompts(self, decomposed_problems_map: Dict, params: GraphRunParams) -> Tuple[List[List[str]], Dict]:
         """Generates the initial system prompts for all agents in the network."""
         word_vector_size = params.vector_word_size
         mbti_archetypes = params.mbti_archetypes
@@ -34,15 +36,21 @@ class AgentFactory:
             prompt_alignment=params.prompt_alignment,
             density=params.density
         )
-        layer_0_prompts = [
-            await input_spanner_chain.ainvoke({
+        layer_0_prompts = []
+        for j, (mbti, guiding_words) in enumerate(seeds.items()):
+            agent_id = f"agent_0_{j}"
+            self.agent_personas[agent_id] = {"mbti_type": mbti, "name": names.get_full_name()}
+            sub_problem = decomposed_problems_map.get(agent_id, user_prompt)
+            prompt = await input_spanner_chain.ainvoke({
                 "mbti_type": mbti,
                 "guiding_words": guiding_words,
-                "sub_problem": decomposed_problems_map.get(f"agent_0_{j}", user_prompt),
-                "critique": ""
-            }) for j, (mbti, guiding_words) in enumerate(seeds.items())
-        ]
+                "sub_problem": sub_problem,
+                "critique": "",
+                "name": self.agent_personas[agent_id]["name"]
+            })
+            layer_0_prompts.append(prompt)
         all_layers_prompts.append(layer_0_prompts)
+
 
         # --- Subsequent Layers ---
         dense_spanner_chain = prompt_service.create_chain(
@@ -50,13 +58,16 @@ class AgentFactory:
             "dense_spanner",
             prompt_alignment=params.prompt_alignment,
             density=params.density,
-            learning_rate=params.learning_rate
         )
         
+        total_agents_to_create = len(mbti_archetypes) * params.cot_trace_depth
+        agent_name_list = [names.get_full_name() for _ in range(total_agents_to_create)]
+
         for i in range(1, params.cot_trace_depth):
             logging.info(f"--- Creating Layer {i} Agents ---")
             current_layer_prompts = []
             for j, agent_prompt in enumerate(all_layers_prompts[i-1]):
+                agent_id = f"agent_{i}_{j}"
                 analysis = await get_structured_output(
                     llm=self.llm,
                     provider_config=self.llm_config,
@@ -68,18 +79,24 @@ class AgentFactory:
                 if not analysis:
                     analysis = AgentAnalysisOutput(attributes="", hard_request="Solve the original problem.")
                 
-                sub_problem = decomposed_problems_map.get(f"agent_{i}_{j}", user_prompt)
+                sub_problem = decomposed_problems_map.get(agent_id, user_prompt)
                 
+                assigned_mbti = random.choice(mbti_archetypes)
+                assigned_name = agent_name_list.pop() if agent_name_list else names.get_full_name()
+                self.agent_personas[agent_id] = {"mbti_type": assigned_mbti, "name": assigned_name}
+                logging.info(f"LOG: Assigned Persona {assigned_name} (MBTI: {assigned_mbti}) to hidden agent {agent_id}")
+
                 new_prompt = await dense_spanner_chain.ainvoke({
                     "attributes": analysis.attributes,
                     "hard_request": analysis.hard_request,
-                    "critique": "",
-                    "sub_problem": sub_problem
+                    "sub_problem": sub_problem,
+                    "mbti_type": assigned_mbti,
+                    "name": assigned_name
                 })
                 current_layer_prompts.append(new_prompt)
             all_layers_prompts.append(current_layer_prompts)
             
-        return all_layers_prompts
+        return all_layers_prompts, self.agent_personas
 
     async def _generate_seed_verbs(self, user_prompt: str, mbti_archetypes: List[str], word_vector_size: int) -> Dict[str, str]:
         """Generates a set of seed verbs based on the user's prompt."""

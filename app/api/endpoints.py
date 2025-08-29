@@ -8,19 +8,29 @@ import traceback
 import zipfile
 import logging
 from typing import Dict, Any
-from fastapi import APIRouter, Request, Body
+from fastapi import APIRouter, Request, Body, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 from langchain_core.documents import Document
+from langgraph.graph import StateGraph, END
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.output_parser import StrOutputParser
 
 from app.core.config import settings
 from app.core.state_manager import session_manager
-from app.graph.nodes import create_final_harvest_node, create_update_rag_index_node
+from app.graph.nodes import (
+    create_final_harvest_node, create_update_rag_index_node,
+    create_synthesis_node, create_code_execution_node, create_agent_node
+)
+from app.graph.state import GraphState
 from app.graph.workflow import build_graph_workflow
 from app.services.llm_service import initialize_llms
 from app.services.prompt_service import prompt_service
-from app.api.schemas import GraphRunPayload
+from app.api.schemas import GraphRunPayload, GraphRunParams
 from app.utils.exceptions import AgentExecutionError
+from app.utils.mock_llms import CoderMockLLM, MockLLM
+from app.utils.json_utils import clean_and_parse_json
+
 
 router = APIRouter()
 
@@ -39,8 +49,6 @@ async def get_app_config():
             "vector_word_size": hyperparams.vector_word_size,
             "prompt_alignment": hyperparams.prompt_alignment,
             "density": hyperparams.density,
-            "critique_strategy": hyperparams.critique_strategy,
-            "learning_rate": hyperparams.learning_rate,
             "prompt": hyperparams.default_prompt,
             "mbti_archetypes": hyperparams.default_mbti_selection
         }
@@ -72,20 +80,17 @@ async def build_and_run_graph(payload: GraphRunPayload):
         
         request_is_code_chain = prompt_service.create_chain(llm, "request_is_code")
         
-        is_code_str = (await request_is_code_chain.ainvoke({"request": user_prompt})).lower()
-        if "true" in is_code_str:
-            is_code = True
-        elif "false" in is_code_str:
-            is_code = False
-        else:
-            #Maybe we retry the check? Gotta setup the framework for this however.
-            raise RuntimeError(f"CRITICAL: is_code_str is not true or false: HALTING!")
-        
+        is_code_str = (await request_is_code_chain.ainvoke({"request": user_prompt})).lower().strip()
+        is_code = "true" in is_code_str
+
+        if payload.params.coder_debug_mode: is_code = True
+        elif payload.params.debug_mode: is_code = False
+
         logging.info(f"--- [SETUP] Request is code: {is_code}")
 
         logging.info("--- [SETUP] Attempting to build graph workflow...")
         graph, initial_state_components = await build_graph_workflow(
-            payload.params, llm, llm_config, synthesizer_llm, summarizer_llm, embeddings_model
+            payload.params, llm, llm_config, synthesizer_llm, summarizer_llm, embeddings_model, is_code
         )
         logging.info("--- [SETUP] Graph workflow built successfully.")
         
@@ -113,6 +118,9 @@ async def build_and_run_graph(payload: GraphRunPayload):
             "embeddings_config": embeddings_config,
             "synthesizer_llm": synthesizer_llm,
             "synthesizer_llm_config": synthesizer_llm_config,
+            "modules": [],
+            "synthesis_context_queue": [],
+            "synthesis_execution_success": True,
             **initial_state_components
         }
         
@@ -125,16 +133,13 @@ async def build_and_run_graph(payload: GraphRunPayload):
 
         try:
             recursion_limit = (payload.params.num_epochs * len(graph.nodes)) + 50
-            # Get the initial state from the session object to pass to astream
             initial_session_object = session_manager.get_session(session_id)
             if not initial_session_object:
                 raise RuntimeError("Failed to create and retrieve session immediately.")
-                
-            # The graph updates the session state in-place via the session_manager
+
             async for output in graph.astream(initial_session_object['state'], {'recursion_limit': recursion_limit}):
                 for node_name, node_output in output.items():
                     logging.info(f"--- Node Finished: {node_name} ---")
-                    
                     if isinstance(node_output, dict) and node_output:
                         session_manager.update_session_state(session_id, node_output)
         
@@ -142,42 +147,27 @@ async def build_and_run_graph(payload: GraphRunPayload):
             error_message = f"Execution halted due to a critical failure in agent '{e.node_id}'. Reason: {e.message}"
             logging.error("--- FATAL EXECUTION ERROR ---")
             logging.error(error_message)
-            return JSONResponse(
-                content={"message": error_message}, 
-                status_code=500
-            )
+            return JSONResponse(content={"message": error_message}, status_code=500)
         
-        # Retrieve the final state after the graph run completes
         final_session_object = session_manager.get_session(session_id)
-        if final_session_object:
-             final_state_value = final_session_object['state']
-             # set_final_state is a good practice if you plan to do more with the session,
-             # but is optional here as the state is already updated.
-             session_manager.set_final_state(session_id, final_state_value)
-        else:
+        if not final_session_object:
             logging.error(f"Session {session_id} expired or was lost before completion.")
             return JSONResponse(content={"message": f"Session {session_id} could not be found after execution."}, status_code=404)
+        
+        final_state_value = final_session_object['state']
+        session_manager.set_final_state(session_id, final_state_value)
 
         if is_code:
-            final_solution = final_state_value.get("final_solution", {})
-            proposed_solution = final_solution.get("proposed_solution", "")
-            reasoning = final_solution.get("reasoning", "")
-
-            # Add a check for an empty solution, which can happen.
-            if proposed_solution and proposed_solution.strip():
-                return JSONResponse(content={
-                    "message": "Code generation complete.",
-                    "code_solution": proposed_solution,
-                    "reasoning": reasoning
-                })
-            else:
-                logging.warning("The 'proposed_solution' from the final graph state was empty. Returning a placeholder.")
-                return JSONResponse(content={
-                    "message": "Code generation complete.",
-                    "code_solution": "# The agent network failed to produce a valid code solution.",
-                    "reasoning": "The final synthesis step resulted in an empty or invalid output. This can occur when agents in the final layers fail to generate solutions, often due to overly complex sub-problems or model limitations.",
-                    "warning": "The 'proposed_solution' from the final graph state was empty. Returning a placeholder."
-                })
+            final_code_solution = final_state_value.get("final_solution", {})
+            final_modules = final_state_value.get("modules", [])
+            logging.info(f"--- 💻 Code Generation Finished. Returning final code and {len(final_modules)} modules. ---")
+            return JSONResponse(content={
+                "message": "Code generation complete.",
+                "code_solution": final_code_solution.get("proposed_solution", "# No code generated."),
+                "reasoning": final_code_solution.get("reasoning", "No reasoning provided."),
+                "modules": final_modules,
+                "session_id": session_id
+            })
         else:
             logging.info("--- Agent Execution Finished. Pausing for User Chat. ---")
             return JSONResponse(content={"message": "Chat is now active.", "session_id": session_id})
@@ -185,15 +175,156 @@ async def build_and_run_graph(payload: GraphRunPayload):
     except Exception as e:
         error_message = f"An unexpected error occurred during graph setup: {e}"
         tb_str = traceback.format_exc()
-        
         logging.critical(f"--- FATAL ERROR DURING GRAPH SETUP ---", exc_info=True)
-        logging.critical(error_message)
-        logging.critical(tb_str)
+        return JSONResponse(content={"message": error_message, "traceback": tb_str}, status_code=500)
+
+@router.post("/run_inference_from_state")
+async def run_inference_from_state(payload: dict = Body(...)):
+    """Runs inference on an imported QNN state without further training."""
+    logging.info("--- [INFERENCE-ONLY] Received request to run inference from imported state. ---")
+    try:
+        imported_state = payload.get("imported_state")
+        user_prompt = payload.get("prompt")
+        params_dict = imported_state.get("params", {})
+
+        if not imported_state or not user_prompt:
+            return JSONResponse(content={"error": "Invalid payload. 'imported_state' and 'prompt' are required."}, status_code=400)
+
+        # Re-initialize LLM for the inference run
+        params = GraphRunParams(**params_dict)
+        (llm, _), (synthesizer_llm, _), _, _ = await initialize_llms(params)
         
-        return JSONResponse(
-            content={"message": error_message, "traceback": tb_str}, 
-            status_code=500
-        )
+        all_layers_prompts = imported_state.get("all_layers_prompts", [])
+        if not all_layers_prompts:
+            return JSONResponse(content={"error": "Imported state must contain 'all_layers_prompts'."}, status_code=400)
+
+        inference_state = imported_state.copy()
+        inference_state.update({
+            "original_request": user_prompt,
+            "current_problem": user_prompt,
+            "agent_outputs": {},
+            "synthesizer_llm": synthesizer_llm,
+            "llm": llm,
+            "is_code_request": True, # Assume inference is for code, can be improved
+            "synthesis_context_queue": imported_state.get("synthesis_context_queue", [])
+        })
+
+        workflow = StateGraph(GraphState)
+
+        # Add agent nodes
+        for i, layer in enumerate(all_layers_prompts):
+            for j in range(len(layer)):
+                node_id = f"agent_{i}_{j}"
+                workflow.add_node(node_id, create_agent_node(node_id))
+
+        # Add synthesis node
+        workflow.add_node("synthesis", create_synthesis_node())
+
+        # Set entry point for parallel execution of layer 0
+        first_layer_nodes = [f"agent_0_{j}" for j in range(len(all_layers_prompts[0]))]
+        workflow.set_entry_point(first_layer_nodes)
+
+        # Connect layers: all of layer i must complete before any of layer i+1 begin
+        for i in range(len(all_layers_prompts) - 1):
+            current_layer = [f"agent_{i}_{j}" for j in range(len(all_layers_prompts[i]))]
+            next_layer_entry = f"agent_{i+1}_0" # Connect to the first node of the next layer
+            workflow.add_edge(current_layer, next_layer_entry)
+            # Connect the rest of the next layer to run in parallel after the first
+            for k in range(1, len(all_layers_prompts[i+1])):
+                workflow.add_edge(next_layer_entry, f"agent_{i+1}_{k}")
+
+        # Connect last layer to synthesis
+        last_layer = [f"agent_{len(all_layers_prompts)-1}_{j}" for j in range(len(all_layers_prompts[-1]))]
+        workflow.add_edge(last_layer, "synthesis")
+        workflow.add_edge("synthesis", END)
+
+        graph = workflow.compile()
+        logging.info("Inference graph compiled.", extra={'ui_extra': {'type': 'graph', 'data': graph.get_graph().draw_ascii()}})
+        
+        final_result_node = None
+        async for output in graph.astream(inference_state):
+             if "synthesis" in output:
+                final_result_node = output["synthesis"]
+
+        logging.info("--- [INFERENCE-ONLY] Run complete. ---")
+
+        synthesis_output = final_result_node.get("final_solution", {})
+        return JSONResponse(content={
+            "message": "Inference complete.",
+            "code_solution": synthesis_output.get("proposed_solution", "No solution generated."),
+            "reasoning": synthesis_output.get("reasoning", "No reasoning provided."),
+            "is_inference": True
+        })
+    except Exception as e:
+        error_message = f"An error occurred during inference: {e}"
+        logging.error(error_message, exc_info=True)
+        return JSONResponse(content={"message": error_message, "traceback": traceback.format_exc()}, status_code=500)
+
+@router.get("/export_qnn/{session_id}")
+async def export_qnn(session_id: str):
+    """Exports the current state of a session graph to a JSON file."""
+    final_state = session_manager.get_final_state(session_id)
+    if not final_state:
+        session_object = session_manager.get_session(session_id)
+        if not session_object:
+            return JSONResponse(content={"error": "Session not found."}, status_code=404)
+        final_state = session_object.get('state')
+
+    if not final_state:
+         return JSONResponse(content={"error": "Session state is empty."}, status_code=404)
+    
+    state_to_export = final_state.copy()
+    
+    # Remove non-serializable objects
+    keys_to_remove = [
+        'llm', 'synthesizer_llm', 'summarizer_llm', 'embeddings_model', 
+        'raptor_index', 'llm_config', 'synthesizer_llm_config', 
+        'summarizer_llm_config', 'embeddings_config'
+    ]
+    for key in keys_to_remove:
+        state_to_export.pop(key, None)
+    
+    # Serialize Pydantic and Document objects
+    if 'params' in state_to_export and isinstance(state_to_export['params'], GraphRunParams):
+        state_to_export['params'] = state_to_export['params'].model_dump()
+
+    if 'all_rag_documents' in state_to_export:
+        state_to_export['all_rag_documents'] = [doc.dict() for doc in state_to_export['all_rag_documents']]
+
+    logging.info(f"--- [EXPORT] Exporting QNN for session {session_id} ---")
+    return JSONResponse(
+        content=state_to_export,
+        headers={"Content-Disposition": f"attachment; filename=qnn_state_{session_id}.json"}
+    )
+
+@router.post("/import_qnn")
+async def import_qnn(file: UploadFile = File(...)):
+    """Imports a QNN JSON file to initialize a new session."""
+    try:
+        content = await file.read()
+        imported_data = json.loads(content)
+        
+        # Deserialize Document objects
+        if 'all_rag_documents' in imported_data:
+            imported_data['all_rag_documents'] = [Document(**doc) for doc in imported_data['all_rag_documents']]
+        
+        # Re-hydrate and validate Pydantic model
+        if 'params' in imported_data:
+            imported_data['params'] = GraphRunParams(**imported_data['params'])
+
+        session_id = session_manager.create_session(imported_data)
+        logging.info(f"--- [IMPORT] Successfully imported QNN file. New Session ID: {session_id} ---")
+        
+        return JSONResponse(content={
+            "message": "QNN file imported successfully.",
+            "session_id": session_id,
+            "imported_params": imported_data.get("params", {}).model_dump() if 'params' in imported_data else {}
+        })
+    except Exception as e:
+        error_message = f"Failed to import QNN file: {e}"
+        logging.error(error_message, exc_info=True)
+        return JSONResponse(content={"message": error_message, "traceback": traceback.format_exc()}, status_code=500)
+
 
 @router.post("/chat")
 async def chat_with_index(payload: dict = Body(...)):
@@ -222,7 +353,6 @@ async def chat_with_index(payload: dict = Body(...)):
                 yield content
                 full_response += content
             
-            # Acquire a lock BEFORE modifying the shared chat_history
             async with session_object["lock"]:
                 current_state = session_object["state"]
                 current_state["chat_history"].extend([
@@ -293,12 +423,11 @@ async def harvest_session(payload: dict = Body(...)):
                 session_manager.update_session_state(session_id, rag_update_output)
 
             num_questions = int(state["params"].num_questions_for_harvest)
-            harvest_node = create_final_harvest_node(state["llm"], state["summarizer_llm"], num_questions)
+            harvest_node = create_final_harvest_node(state["llm"], state["synthesizer_llm"], num_questions)
             
             harvest_output = await harvest_node(state)
             session_manager.update_session_state(session_id, harvest_output)
             
-            # Re-fetch state to ensure we have the latest updates
             updated_session_object = session_manager.get_session(session_id)
             academic_papers = updated_session_object["state"].get("academic_papers", {})
 
@@ -311,7 +440,6 @@ async def harvest_session(payload: dict = Body(...)):
         except Exception as e:
             error_message = f"An error occurred during harvest: {e}"
             logging.error(f"--- FATAL ERROR DURING HARVEST ---", exc_info=True)
-            logging.error(f"{error_message}\n{traceback.format_exc()}")
             return JSONResponse(content={"message": error_message, "traceback": traceback.format_exc()}, status_code=500)
 
 @router.get('/stream_log')

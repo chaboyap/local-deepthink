@@ -142,14 +142,14 @@ pre {
     padding-bottom: 0;
     margin: 0;
 }
-#download-log-button, #download-report-button {
+#download-log-button, #download-report-button, #export-qnn-button {
     width: auto;
     padding: 0.5rem 1rem;
     margin-bottom: 0;
     font-size: 0.9rem;
     background-color: var(--secondary-color);
 }
-#download-log-button:hover:not(:disabled), #download-report-button:hover:not(:disabled) {
+#download-log-button:hover:not(:disabled), #download-report-button:hover:not(:disabled), #export-qnn-button:hover:not(:disabled) {
     background-color: #3a3b44;
 }
 .chat-messages {
@@ -210,3 +210,47 @@ pre {
 .diagnostic-ai-message { background-color: #1c2e4a; color: #e0e0ff; }
 .diagnostic-user-message { background-color: #0056b3; }
 #code-reasoning { white-space: pre-wrap; }
+
+/* QNN Import Styles */
+.qnn-import-section {
+    border: 2px dashed var(--accent-color);
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    text-align: center;
+}
+.qnn-import-section label {
+    cursor: pointer;
+    background-color: var(--secondary-color);
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--border-radius);
+    display: inline-block;
+    margin-bottom: 1rem;
+}
+.qnn-import-section input[type="file"] {
+    display: none;
+}
+#imported-qnn-info {
+    background-color: #1c2e4a;
+    padding: 1rem;
+    border-radius: var(--border-radius);
+    margin-top: 1rem;
+    text-align: left;
+}
+#inference-options {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    margin-top: 1rem;
+}
+#inference-options button {
+    background-color: #007bff;
+    width: auto;
+}
+#inference-options button:hover:not(:disabled) {
+    background-color: #0056b3;
+}
+#export-qnn-button {
+    display: block;
+    max-width: 900px;
+    margin: 2rem auto;
+}

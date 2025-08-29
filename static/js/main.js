@@ -29,6 +29,14 @@ document.addEventListener('DOMContentLoaded', () => {
         codeResultContainer: document.getElementById('code-result-container'),
         codeOutput: document.getElementById('code-output'),
         codeReasoning: document.getElementById('code-reasoning'),
+        modulesContainer: document.getElementById('modules-container'),
+        modulesOutput: document.getElementById('modules-output'),
+        qnnImportContainer: document.getElementById('qnn-import-container'),
+        qnnFileInput: document.getElementById('qnn-file-input'),
+        importedQnnInfo: document.getElementById('imported-qnn-info'),
+        loadedFilename: document.getElementById('loaded-filename'),
+        inferenceOnlyBtn: document.getElementById('inference-only-btn'),
+        exportQnnButton: document.getElementById('export-qnn-button'),
         mbtiGrid: document.querySelector('.mbti-grid'),
     };
 
@@ -39,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
         perplexityData: { labels: [], values: [] },
         currentSessionId: null,
         eventSource: null,
+        importedStateContent: null,
     };
 
     const toggleFormElements = (disabled) => {
@@ -65,7 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (appConfig.defaults) {
                 Object.entries(appConfig.defaults).forEach(([key, value]) => {
-                    const formElement = document.getElementById(key);
+                    const formElement = document.getElementById(key) || elements.graphParamsForm.querySelector(`[name="${key}"]`);
                     if (key === 'mbti_archetypes' && Array.isArray(value)) {
                         elements.mbtiGrid.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
                         value.forEach(mbti => {
@@ -131,21 +140,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
-    const resetUIForNewRun = () => {
-        toggleFormElements(true);
+    const resetUIForNewRun = (isFullReset = true) => {
         elements.runButton.textContent = 'Processing...';
+        elements.runButton.disabled = true;
+        
         elements.logContainer.innerHTML = '';
         state.fullLogContent = '';
         elements.graphContainer.innerHTML = '<p>ASCII graph will be displayed here...</p>';
         state.perplexityData = { labels: [], values: [] };
         renderPerplexityChart();
+        
         elements.chatContainer.classList.add('hidden');
         elements.reportContainer.classList.add('hidden');
         elements.codeResultContainer.classList.add('hidden');
-        elements.runInterface.classList.remove('hidden'); 
+        elements.modulesContainer.classList.add('hidden');
+        elements.exportQnnButton.classList.add('hidden');
+        
         elements.diagnosticChatMessages.innerHTML = '';
         elements.diagnosticChatInput.disabled = true;
         elements.diagnosticChatInput.placeholder = 'Waiting for RAG index...';
+
+        elements.graphArchitectureSection.classList.add('hidden');
+        elements.qnnImportContainer.classList.add('hidden');
+        elements.runInterface.classList.remove('hidden'); 
+        
+        if(isFullReset) {
+            toggleFormElements(true);
+        }
+    };
+
+    const finishRun = () => {
+        toggleFormElements(false);
+        elements.runButton.disabled = false;
+        elements.runButton.textContent = 'Build and Run Graph';
+        elements.graphArchitectureSection.classList.remove('hidden');
+        elements.qnnImportContainer.classList.remove('hidden');
+        elements.runInterface.classList.add('hidden');
+        if (state.currentSessionId) {
+            elements.exportQnnButton.classList.remove('hidden');
+        }
     };
 
     const populateMbtiGrid = () => {
@@ -172,61 +205,47 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const handleFormSubmit = async () => {
-        if (!elements.graphParamsForm.reportValidity()) return;
-
-        const formData = new FormData(elements.graphParamsForm);
-        const params = {};
-        formData.forEach((value, key) => {
-            if (key === 'mbti_archetypes') {
-                if (!params[key]) params[key] = [];
-                params[key].push(value);
-            } else if (['cot_trace_depth', 'num_questions', 'num_epochs', 'vector_word_size'].includes(key)) {
-                params[key] = parseInt(value, 10);
-            } else if (['prompt_alignment', 'density', 'learning_rate'].includes(key)) {
-                params[key] = parseFloat(value);
-            } else if (key.endsWith('mode')) {
-                params[key] = value === 'true';
-            } else {
-                params[key] = value;
-            }
-        });
-
-        if (!params.mbti_archetypes || params.mbti_archetypes.length < 2) {
-            alert('Please select at least 2 MBTI archetypes.');
-            return; 
-        }
-
-        resetUIForNewRun();
+    const runGraph = async (payload, endpointUrl) => {
+        resetUIForNewRun(false);
         startLogStream();
-
         try {
-            const response = await fetch('/build_and_run_graph', {
+            const response = await fetch(endpointUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ params })
+                body: JSON.stringify(payload)
             });
             const result = await response.json();
 
             if (!response.ok) {
                 throw new Error(`Server Error (${response.status}): ${result.message || 'Unknown error'}\n${result.traceback || ''}`);
             }
+            
+            if (result.session_id) {
+                state.currentSessionId = result.session_id;
+            }
 
             if ('code_solution' in result) {
-                elements.codeOutput.textContent = result.code_solution;
+                elements.codeOutput.textContent = result.code_solution.replace(/\\n/g, '\n').replace(/\\"/g, '"');
                 Prism.highlightElement(elements.codeOutput);
                 elements.codeReasoning.textContent = result.reasoning;
                 elements.codeResultContainer.classList.remove('hidden');
+                if (result.modules && Array.isArray(result.modules) && result.modules.length > 0) {
+                    elements.modulesOutput.innerHTML = '';
+                    result.modules.forEach((module, index) => {
+                        const code = module.code.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+                        const card = module.card.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+                        elements.modulesOutput.innerHTML += `<h3>Module ${index + 1}: Interface Card</h3><pre>${card}</pre><h3>Module ${index + 1}: Source Code</h3><pre><code class="language-python">${code}</code></pre>`;
+                    });
+                    Prism.highlightAllUnder(elements.modulesOutput);
+                    elements.modulesContainer.classList.remove('hidden');
+                }
             } else if (result.session_id) {
-                state.currentSessionId = result.session_id;
                 elements.chatContainer.classList.remove('hidden');
             }
-
         } catch (error) {
             addLogMessage(`FATAL ERROR: ${error.message}`, '#FF5555');
         } finally {
-            toggleFormElements(false);
-            elements.runButton.textContent = 'Build and Run Graph';
+            finishRun();
         }
     };
     
@@ -350,9 +369,29 @@ document.addEventListener('DOMContentLoaded', () => {
     const init = () => {
         populateMbtiGrid();
         fetchAndApplyConfig();
+        handleDebugCheck(); 
+
         elements.debugModeCheckbox.addEventListener('change', handleDebugCheck);
         elements.coderDebugModeCheckbox.addEventListener('change', handleDebugCheck);
-        elements.runButton.addEventListener('click', handleFormSubmit);
+        elements.runButton.addEventListener('click', () => {
+            if (!elements.graphParamsForm.reportValidity()) return;
+            const formData = new FormData(elements.graphParamsForm);
+            
+            const params = {};
+            formData.forEach((value, key) => {
+                // This will overwrite single keys, which is fine
+                params[key] = value;
+            });
+            // This specifically handles the multi-select
+            params.mbti_archetypes = formData.getAll('mbti_archetypes');
+
+            if (params.mbti_archetypes.length < 2) {
+                alert('Please select at least 2 MBTI archetypes.');
+                return; 
+            }
+            runGraph({ params }, '/build_and_run_graph');
+        });
+
         elements.downloadLogButton.addEventListener('click', () => {
             const blob = new Blob([state.fullLogContent], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
@@ -363,6 +402,34 @@ document.addEventListener('DOMContentLoaded', () => {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
+        });
+        
+        elements.qnnFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) { state.importedStateContent = null; return; }
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                state.importedStateContent = event.target.result;
+                elements.loadedFilename.textContent = file.name;
+                elements.importedQnnInfo.classList.remove('hidden');
+                elements.graphArchitectureSection.classList.add('hidden');
+            };
+            reader.readAsText(file);
+        });
+
+        elements.inferenceOnlyBtn.addEventListener('click', () => {
+            if (!state.importedStateContent) { alert("No QNN file loaded."); return; }
+            const newPrompt = prompt("Enter the prompt for the inference run:", document.getElementById('prompt').value);
+            if (!newPrompt || !newPrompt.trim()) { alert("A prompt is required."); return; }
+            runGraph({ imported_state: JSON.parse(state.importedStateContent), prompt: newPrompt }, '/run_inference_from_state');
+        });
+
+        elements.exportQnnButton.addEventListener('click', () => {
+            if (state.currentSessionId) {
+                window.location.href = `/export_qnn/${state.currentSessionId}`;
+            } else {
+                alert("No active session to export.");
+            }
         });
         
         elements.chatForm.addEventListener('submit', (e) => handleChat(e, elements.chatInput, elements.chatMessages, '/chat'));

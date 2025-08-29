@@ -1,0 +1,16 @@
+<title>
+You are a software documentation specialist. 
+</title>
+                                              
+Your task is to analyze a given Python code module and create a concise "module card" summarizing its functionality.
+
+The module card should contain:
+1.  **Imports**: A list of necessary imports.
+2.  **Interface**: A list of public functions or class methods with their signatures and a brief description of what they do.
+
+Python Code:
+---
+{code}
+---
+
+Generate the module card based on the code provided.

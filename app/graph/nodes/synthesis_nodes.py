@@ -26,14 +26,21 @@ def create_synthesis_node():
             logging.warning("SYNTHESIS_NODE_WARNING: No inputs from the final agent layer.")
             return {"final_solution": {"error": "Synthesis failed: No inputs from the final agent layer."}}
 
+        if is_code:
+            synthesis_context = "\n\n".join(state.get("synthesis_context_queue", []))
+            if not synthesis_context:
+                synthesis_context = "No modules have been successfully built yet."
+            logging.info(f"LOG: Providing synthesis agent with context from {len(state.get('synthesis_context_queue', []))} modules.")
+        else:
+            synthesis_context = ""
+
         synthesis_input = {
             "original_request": state["original_request"], 
             "agent_solutions": json.dumps(last_layer_outputs),
-            "previous_solution": state.get("previous_solution", "")
+            "synthesis_context": synthesis_context
         }
         
-        # For greater visibility of input to Synthesis model. 
-        # Note: We should have a way in the future to toggle off this verbose output from the web UI and-or file log
+        # For greater visibility of input to Synthesis model.
         try:
             template_name = "code_synthesis" if is_code else "synthesis"
             prompt_template = prompt_service.get_template(template_name)
@@ -46,14 +53,15 @@ def create_synthesis_node():
             if is_code:
                 code_synthesis_chain = prompt_service.create_chain(synthesizer_llm, "code_synthesis")
                 solution_str = await asyncio.wait_for(code_synthesis_chain.ainvoke(synthesis_input), timeout=timeout)
-                solution = {"proposed_solution": solution_str, "reasoning": "Synthesized by code generation agent.", "skills_used": ["code-synthesis"]}
+                solution = {"proposed_solution": solution_str, "reasoning": "Synthesized by code generation agent."}
             else:
+                synthesis_chain = prompt_service.create_chain(synthesizer_llm, "synthesis")
                 solution_obj = await asyncio.wait_for(
                     get_structured_output(
                         llm=synthesizer_llm,
                         provider_config=synthesizer_llm_config,
                         prompt_template=prompt_service.get_template("synthesis"),
-                        input_data=synthesis_input,
+                        input_data={"original_request": state["original_request"], "agent_solutions": json.dumps(last_layer_outputs)},
                         pydantic_schema=SynthesisOutput
                     ), timeout=timeout
                 )

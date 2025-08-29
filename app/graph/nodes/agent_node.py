@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.services.structured_output_adapter import get_structured_output
 from app.services.schemas import AgentOutput
 from app.utils.exceptions import AgentExecutionError
+from app.graph.nodes.execution_nodes import execute_code_in_sandbox
 
 def create_agent_node(node_id: str):
     """Factory for creating a robust agent node."""
@@ -98,6 +99,21 @@ This is a log of your previous proposed solutions and reasonings (memory), and d
             
         # This code only runs on success
         response_json = response_object.model_dump()
+        
+        if state.get("is_code_request") and layer_idx > 0:
+            logging.info(f"--- [SANDBOX] Testing code from Agent {node_id} ---")
+            code_to_test = response_json.get("proposed_solution", "")
+            success, output = execute_code_in_sandbox(code_to_test)
+            sandbox_log = {
+                "sandbox_execution_log": {
+                    "success": success,
+                    "output": output
+                }
+            }
+            agent_memory.append(sandbox_log)
+            logging.info(f"--- [SANDBOX] Agent {node_id} Result: {'Success' if success else 'Failure'} ---")
+            logging.info(output)
+
         current_memory = state.get("memory", {})
         current_memory[node_id] = agent_memory + [response_json]
 

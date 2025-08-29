@@ -4,19 +4,18 @@ import json
 import logging
 import random
 
-from app.agents.personas import PersonaService, reactor_list
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
 from app.services.structured_output_adapter import get_structured_output
 from app.services.schemas import (
-    AssessmentOutput, NewProblemOutput, DecompositionOutput, AgentAnalysisOutput
+    NewProblemOutput, DecompositionOutput, AgentAnalysisOutput
 )
 
 def create_reframe_and_decompose_node():
-    """Creates node to re-frame and decompose the problem after a breakthrough."""
+    """Creates node to re-frame and decompose the problem after an epoch."""
     async def reframe_node(state: GraphState) -> dict:
-        logging.info("--- [REFLECTION] Re-framing Problem due to breakthrough ---")
+        logging.info("--- [REFLECTION] Re-framing Problem for Next Epoch ---")
         llm, llm_config = state["llm"], state["llm_config"]
         timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
         
@@ -64,27 +63,21 @@ def create_reframe_and_decompose_node():
     return reframe_node
 
 def create_update_agent_prompts_node():
-    """Creates the node that updates agent prompts based on critiques."""
+    """Creates the node that updates agent prompts based on the newly reframed problem."""
     async def update_prompts_node(state: GraphState) -> dict:
-        logging.info("--- [REFLECTION] Updating Agent Prompts (Backpropagation) ---")
-        critiques, llm, llm_config, params = state.get("critiques", {}), state["llm"], state["llm_config"], state["params"]
+        logging.info("--- [REFLECTION] Updating Agent Prompts (Targeted Backpropagation) ---")
+        llm, llm_config, params = state["llm"], state["llm_config"], state["params"]
         
-        if not critiques and not state.get("significant_progress_made"):
-            logging.warning("No critiques and no progress; prompts will not be updated.")
-            return {"agent_outputs": {}}
-
         prompts_copy = [layer[:] for layer in state["all_layers_prompts"]]
         update_failure_count = 0
         timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
-        # The parameters are static for the entire run, so they can be partially formatted once
-        dense_spanner = prompt_service.create_chain(llm, "dense_spanner", **params.model_dump())
+        
+        # Partially format the chain with static parameters for efficiency
+        dense_spanner_chain = prompt_service.create_chain(llm, "dense_spanner", **params.model_dump())
 
         for i in range(len(prompts_copy) - 1, -1, -1):
             for j, agent_prompt in enumerate(prompts_copy[i]):
                 agent_id = f"agent_{i}_{j}"
-                critique = critiques.get(agent_id, critiques.get("global_critique", ""))
-                
-                if not critique and not state.get("significant_progress_made"): continue
                 
                 try:
                     analysis = await asyncio.wait_for(
@@ -99,12 +92,14 @@ def create_update_agent_prompts_node():
                     if not analysis: raise ValueError("Agent analysis returned no output.")
                     
                     sub_problem = state.get("decomposed_problems", {}).get(agent_id, state["original_request"])
+                    agent_persona = state.get("agent_personas", {}).get(agent_id, {})
                     
-                    new_prompt = await asyncio.wait_for(dense_spanner.ainvoke({
+                    new_prompt = await asyncio.wait_for(dense_spanner_chain.ainvoke({
                         "attributes": analysis.attributes, 
                         "hard_request": analysis.hard_request,
-                        "critique": critique, 
-                        "sub_problem": sub_problem
+                        "sub_problem": sub_problem,
+                        "mbti_type": agent_persona.get("mbti_type"),
+                        "name": agent_persona.get("name")
                     }), timeout=timeout)
                     prompts_copy[i][j] = new_prompt
                 except Exception as e:
@@ -116,12 +111,11 @@ def create_update_agent_prompts_node():
             logging.warning(f"{update_failure_count}/{total_agents} agents failed to update prompts.")
         
         logging.info(f"--- Finished Epoch {state.get('epoch', 0)}. ---")
-        # Clear out state for the next epoch and pass the final solution to the next epoch
+        # Clear out state for the next epoch, carrying over the solution from this one
         previous_solution_str = json.dumps(state.get("final_solution")) if state.get("final_solution") else ""
         return { 
             "all_layers_prompts": prompts_copy, 
             "agent_outputs": {}, 
-            "critiques": {}, 
             "previous_solution": previous_solution_str,
             "final_solution": None
         }

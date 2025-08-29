@@ -11,6 +11,10 @@ class GraphState(TypedDict):
     Represents the state of the graph. It's passed between nodes and updated
     at each step of the execution.
     """
+    modules: List[dict]
+    synthesis_context_queue: List[str]
+    synthesis_execution_success: bool
+    agent_personas: dict
     previous_solution: str
     current_problem: str
     original_request: str

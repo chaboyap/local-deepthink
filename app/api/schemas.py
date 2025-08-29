@@ -12,8 +12,6 @@ class GraphRunParams(BaseModel):
     vector_word_size: int = Field(default=2, ge=2, le=10)
     prompt_alignment: float = Field(default=1.0, ge=0.1, le=2.0)
     density: float = Field(default=1.0, ge=0.1, le=2.0)
-    learning_rate: float = Field(default=0.1, ge=0.1, le=2.0)
-    critique_strategy: str = "penultimate"
     debug_mode: bool = False
     coder_debug_mode: bool = False
     

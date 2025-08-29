@@ -4,15 +4,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NoA | Network of Agents</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-okaidia.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/toolbar/prism-toolbar.min.css">
+    <script src="/static/js/chart.js"></script>
+    <link rel="stylesheet" href="/static/css/prism-okaidia.min.css">
+    <link rel="stylesheet" href="/static/css/prism-toolbar.min.css">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <h1>It takes a village of agents to raise an insight</h1>
 
     <div class="container">
+        <div id="qnn-import-container" class="section qnn-import-section">
+            <h2>Load a Pre-Trained Graph (QNN)</h2>
+            <p>Import a previously exported QNN JSON file to run in inference-only mode.</p>
+            <form id="import-qnn-form">
+                <label for="qnn-file-input">Select QNN File</label>
+                <input type="file" id="qnn-file-input" accept=".json">
+            </form>
+            <div id="imported-qnn-info" class="hidden">
+                <p><strong>File Loaded:</strong> <span id="loaded-filename"></span></p>
+                <p>A QNN file has been loaded. You can modify the prompt below. Then, click to run inference.</p>
+                <div id="inference-options">
+                    <button id="inference-only-btn">Run Inference Only</button>
+                </div>
+            </div>
+        </div>
+
         <div id="graph-architecture-section" class="section">
             <h2>Graph Architecture</h2>
             <form id="graph-params-form">
@@ -46,13 +62,6 @@
                 <input type="number" id="prompt_alignment" name="prompt_alignment" step="0.1" min="0.1" max="2.0" required>
                 <label for="density">Density (0.1-2.0):</label>
                 <input type="number" id="density" name="density" step="0.1" min="0.1" max="2.0" required>
-                <label for="learning_rate">Learning Rate (0.1-2.0):</label>
-                <input type="number" id="learning_rate" name="learning_rate" step="0.1" min="0.1" max="2.0" required>
-                <label for="critique_strategy">Critique Strategy:</label>
-                <select id="critique_strategy" name="critique_strategy">
-					<option value="full">Full Network (Slow, Exhaustive)</option>
-                    <option value="penultimate" selected>Penultimate Layer (Fast, Focused)</option>
-                </select>
                 <!-- MBTI Archetypes -->
                 <label>MBTI Archetypes (select at least 2):</label>
                 <div class="mbti-grid">
@@ -119,10 +128,18 @@
         <p id="code-reasoning"></p>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/toolbar/prism-toolbar.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/copy-to-clipboard/prism-copy-to-clipboard.min.js"></script>
+    <div class="container hidden" id="modules-container">
+        <h2>Successfully Built Modules</h2>
+        <p>The following modules were successfully synthesized and executed during the run.</p>
+        <div id="modules-output"></div>
+    </div>
+    
+    <button id="export-qnn-button" class="hidden">Export QNN</button>
+
+    <script src="/static/js/prism-core.min.js"></script>
+    <script src="/static/js/prism-autoloader.min.js"></script>
+    <script src="/static/js/prism-toolbar.min.js"></script>
+    <script src="/static/js/prism-copy-to-clipboard.min.js"></script>
     <script src="/static/js/main.js"></script>
 </body>
 </html>
