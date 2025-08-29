@@ -67,6 +67,9 @@ hyperparameters:
   # The time-to-live for a session in seconds. Default is 2 days (172800).
   session_ttl_seconds: 172800
   
+  # The byte size limit for an agent's memory before it's summarized.
+  agent_memory_limit_bytes: 450000
+
   # --- Backwards Pass / Critique Hyperparameters ---
   # Defines the personas of agents who will critique the synthesized solution at the end of each epoch.
   # If this list is empty, the critique step will be skipped.
@@ -123,7 +126,7 @@ llm_providers:
   synthesizer_llm:
     # OPTION 1: Google Gemini (Recommended Default)
     provider: "gemini"
-    model_name: "gemini-2.5-pro"
+    model_name: "gemini-1.5-pro"
     # This MUST be true for non-code synthesis and reliable agent fallbacks to work.
     enable_structured_output: true
     config:

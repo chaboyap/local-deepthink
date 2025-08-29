@@ -7,7 +7,7 @@ from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
 from app.services.structured_output_adapter import get_structured_output
-from app.services.schemas import SynthesisOutput, GeneratedQuestions
+from app.services.schemas import SynthesisOutput, GeneratedQuestions, CodeSynthesisOutput
 from app.utils.exceptions import AgentExecutionError
 
 def create_synthesis_node():
@@ -51,11 +51,17 @@ def create_synthesis_node():
 
         try:
             if is_code:
-                code_synthesis_chain = prompt_service.create_chain(synthesizer_llm, "code_synthesis")
-                solution_str = await asyncio.wait_for(code_synthesis_chain.ainvoke(synthesis_input), timeout=timeout)
-                solution = {"proposed_solution": solution_str, "reasoning": "Synthesized by code generation agent."}
+                solution_obj = await asyncio.wait_for(
+                    get_structured_output(
+                        llm=synthesizer_llm,
+                        provider_config=synthesizer_llm_config,
+                        prompt_template=prompt_service.get_template("code_synthesis"),
+                        input_data=synthesis_input,
+                        pydantic_schema=CodeSynthesisOutput
+                    ), timeout=timeout
+                )
+                solution = solution_obj.model_dump() if solution_obj else None
             else:
-                synthesis_chain = prompt_service.create_chain(synthesizer_llm, "synthesis")
                 solution_obj = await asyncio.wait_for(
                     get_structured_output(
                         llm=synthesizer_llm,

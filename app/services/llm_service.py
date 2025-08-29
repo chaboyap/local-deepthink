@@ -4,12 +4,18 @@ import traceback
 from app.core.config import settings
 from typing import List, Tuple
 import logging
+from pydantic import BaseModel
 
 from app.services.llm_providers import get_provider
 from langchain_core.embeddings import Embeddings
 from app.utils.mock_llms import CoderMockLLM, MockLLM
 from app.core.config import ProviderConfig, AppSettings
 from langchain_core.language_models import BaseChatModel
+
+class LLMInitializationParams(BaseModel):
+    """Defines only the parameters needed to initialize LLMs."""
+    debug_mode: bool = False
+    coder_debug_mode: bool = False
 
 def _create_chat_model(model_config: ProviderConfig) -> BaseChatModel:
     """
@@ -33,7 +39,7 @@ class MockEmbeddings(Embeddings):
     async def aembed_query(self, text: str) -> List[float]:
         return self.embed_query(text)
 
-async def initialize_llms(params: dict) -> Tuple:
+async def initialize_llms(params: LLMInitializationParams) -> Tuple:
     """
     Initializes and returns the LLM and embeddings models based on config.
     Returns tuples of (model_instance, model_config) for use with the adapter.
@@ -41,13 +47,13 @@ async def initialize_llms(params: dict) -> Tuple:
     mock_config = ProviderConfig(provider="mock", model_name="mock")
     app_settings: AppSettings = settings
 
-    if app_settings.debugging.coder_debug_mode:
+    if params.coder_debug_mode:
         logging.info("--- 💻 CODER DEBUG MODE ENABLED 💻 ---")
         mock_llm = CoderMockLLM()
         mock_embed = MockEmbeddings()
         return (mock_llm, mock_config), (mock_llm, mock_config), (mock_llm, mock_config), (mock_embed, mock_config)
 
-    if app_settings.debugging.debug_mode:
+    if params.debug_mode:
         logging.info("--- 🚀 DEBUG MODE ENABLED 🚀 ---")
         mock_llm = MockLLM()
         mock_embed = MockEmbeddings()

@@ -31,7 +31,7 @@ def create_agent_node(node_id: str):
             input_data = json.dumps(prev_layer_outputs, indent=2)
 
         agent_memory = state.get("memory", {}).get(node_id, [])
-        if len(json.dumps(agent_memory)) > 450000:
+        if len(json.dumps(agent_memory)) > settings.hyperparameters.agent_memory_limit_bytes:
              logging.warning(f"Memory for agent {node_id} is large. Summarizing...")
              summarizer_llm = state.get("summarizer_llm")
              summarizer_chain = prompt_service.create_chain(summarizer_llm, "memory_summarizer")

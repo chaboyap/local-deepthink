@@ -43,6 +43,7 @@ class Hyperparameters(BaseModel):
     default_prompt: Optional[str] = None
     default_mbti_selection: Optional[List[str]] = None
     session_ttl_seconds: int = 172800 # Some runs may be 2 days long.
+    agent_memory_limit_bytes: int = Field(..., gt=0)
     critique_agents: Optional[List[CritiqueAgentConfig]] = Field(default_factory=list)
 
 class AppSettings(BaseModel):

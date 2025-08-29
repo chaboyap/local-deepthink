@@ -26,7 +26,7 @@ class CoderMockLLM(Runnable):
                 Methods:
 
                     __enter__
-                    __exict__
+                    __exit__
 
                 Attributes:
 

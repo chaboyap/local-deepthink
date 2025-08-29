@@ -24,7 +24,7 @@ from app.graph.nodes import (
 )
 from app.graph.state import GraphState
 from app.graph.workflow import build_graph_workflow
-from app.services.llm_service import initialize_llms
+from app.services.llm_service import initialize_llms, LLMInitializationParams
 from app.services.prompt_service import prompt_service
 from app.api.schemas import GraphRunPayload, GraphRunParams
 from app.utils.exceptions import AgentExecutionError
@@ -71,10 +71,14 @@ async def build_and_run_graph(payload: GraphRunPayload):
     logging.info(f"--- Starting graph run with params: {payload.params.model_dump_json(indent=2)} ---")
  
     try:
+        init_params = LLMInitializationParams(
+            debug_mode=payload.params.debug_mode,
+            coder_debug_mode=payload.params.coder_debug_mode
+        )
         (llm, llm_config), \
         (synthesizer_llm, synthesizer_llm_config), \
         (summarizer_llm, summarizer_llm_config), \
-        (embeddings_model, embeddings_config) = await initialize_llms(payload.params)
+        (embeddings_model, embeddings_config) = await initialize_llms(init_params)
         
         logging.info("--- [SETUP] Initialized LLMs successfully.")
         
@@ -192,7 +196,11 @@ async def run_inference_from_state(payload: dict = Body(...)):
 
         # Re-initialize LLM for the inference run
         params = GraphRunParams(**params_dict)
-        (llm, _), (synthesizer_llm, _), _, _ = await initialize_llms(params)
+        init_params = LLMInitializationParams(
+            debug_mode=params.debug_mode,
+            coder_debug_mode=params.coder_debug_mode
+        )
+        (llm, _), (synthesizer_llm, _), _, _ = await initialize_llms(init_params)
         
         all_layers_prompts = imported_state.get("all_layers_prompts", [])
         if not all_layers_prompts:
@@ -220,22 +228,18 @@ async def run_inference_from_state(payload: dict = Body(...)):
         # Add synthesis node
         workflow.add_node("synthesis", create_synthesis_node())
 
-        # Set entry point for parallel execution of layer 0
-        first_layer_nodes = [f"agent_0_{j}" for j in range(len(all_layers_prompts[0]))]
-        workflow.set_entry_point(first_layer_nodes)
-
-        # Connect layers: all of layer i must complete before any of layer i+1 begin
-        for i in range(len(all_layers_prompts) - 1):
-            current_layer = [f"agent_{i}_{j}" for j in range(len(all_layers_prompts[i]))]
-            next_layer_entry = f"agent_{i+1}_0" # Connect to the first node of the next layer
-            workflow.add_edge(current_layer, next_layer_entry)
-            # Connect the rest of the next layer to run in parallel after the first
-            for k in range(1, len(all_layers_prompts[i+1])):
-                workflow.add_edge(next_layer_entry, f"agent_{i+1}_{k}")
-
+        # Define layer node IDs for clarity
+        layer_node_ids = [[f"agent_{i}_{j}" for j in range(len(all_layers_prompts[i]))] for i in range(len(all_layers_prompts))]
+        
+        # Set entry point for parallel execution of the first layer
+        workflow.set_entry_point(layer_node_ids[0])
+        
+        # Connect subsequent layers correctly for parallel execution
+        for i in range(len(layer_node_ids) - 1):
+            workflow.add_edge(layer_node_ids[i], layer_node_ids[i+1])
+        
         # Connect last layer to synthesis
-        last_layer = [f"agent_{len(all_layers_prompts)-1}_{j}" for j in range(len(all_layers_prompts[-1]))]
-        workflow.add_edge(last_layer, "synthesis")
+        workflow.add_edge(layer_node_ids[-1], "synthesis")
         workflow.add_edge("synthesis", END)
 
         graph = workflow.compile()
@@ -247,6 +251,10 @@ async def run_inference_from_state(payload: dict = Body(...)):
                 final_result_node = output["synthesis"]
 
         logging.info("--- [INFERENCE-ONLY] Run complete. ---")
+
+        if not final_result_node:
+            logging.error("--- [INFERENCE-ONLY] Run failed before reaching synthesis node. ---")
+            return JSONResponse(content={"message": "Inference run failed before a solution could be synthesized."}, status_code=500)
 
         synthesis_output = final_result_node.get("final_solution", {})
         return JSONResponse(content={
@@ -342,6 +350,11 @@ async def chat_with_index(payload: dict = Body(...)):
 
     async def stream_response():
         message = payload.get("message")
+        
+        # Lock immediately to append the user's message to the history
+        async with session_object["lock"]:
+            session_object["state"]["chat_history"].append({"role": "user", "content": message})
+
         try:
             retrieved_docs = await asyncio.to_thread(raptor_index.retrieve, message, k=10)
             context = "\n\n---\n\n".join([doc.page_content for doc in retrieved_docs])
@@ -353,12 +366,12 @@ async def chat_with_index(payload: dict = Body(...)):
                 yield content
                 full_response += content
             
+            # Lock again to append the final AI response
             async with session_object["lock"]:
                 current_state = session_object["state"]
-                current_state["chat_history"].extend([
-                    {"role": "user", "content": message},
-                    {"role": "ai", "content": full_response}
-                ])
+                # Ensure the last entry is the user message to prevent double-adding AI response
+                if current_state["chat_history"] and current_state["chat_history"][-1]['role'] == 'user':
+                    current_state["chat_history"].append({"role": "ai", "content": full_response})
                 
         except Exception as e:
             logging.error(f"Error during chat stream for session {session_id}: {e}", exc_info=True)
@@ -405,7 +418,6 @@ async def harvest_session(payload: dict = Body(...)):
     async with session_object["lock"]:
         try:
             state = session_object["state"]
-
             logging.info("--- [HARVEST] Initiating Final Harvest Process ---")
             chat_history = state.get("chat_history", [])
             
@@ -416,17 +428,28 @@ async def harvest_session(payload: dict = Body(...)):
                 state["all_rag_documents"].extend(chat_docs)
                 session_manager.update_session_state(session_id, {"all_rag_documents": state["all_rag_documents"]})
 
-                logging.info(f"--- [RAG PASS] Building Final RAPTOR Index with {len(chat_docs)} chat documents ---")
-                update_rag_node = create_update_rag_index_node(state["summarizer_llm"], state["embeddings_model"])
-                
-                rag_update_output = await update_rag_node(state, end_of_run=True)
-                session_manager.update_session_state(session_id, rag_update_output)
+            # Create a mini-graph for the harvest process to run asynchronously
+            harvest_workflow = StateGraph(GraphState)
+            
+            update_rag_node = create_update_rag_index_node(state["summarizer_llm"], state["embeddings_model"])
+            harvest_workflow.add_node("update_rag_index_final", lambda s: update_rag_node(s, end_of_run=True))
 
             num_questions = int(state["params"].num_questions_for_harvest)
             harvest_node = create_final_harvest_node(state["llm"], state["synthesizer_llm"], num_questions)
+            harvest_workflow.add_node("final_harvest", harvest_node)
+
+            harvest_workflow.set_entry_point("update_rag_index_final")
+            harvest_workflow.add_edge("update_rag_index_final", "final_harvest")
+            harvest_workflow.add_edge("final_harvest", END)
             
-            harvest_output = await harvest_node(state)
-            session_manager.update_session_state(session_id, harvest_output)
+            harvest_graph = harvest_workflow.compile()
+            
+            logging.info("--- [HARVEST] Executing Harvest Graph... ---")
+            async for output in harvest_graph.astream(state):
+                for node_name, node_output in output.items():
+                    logging.info(f"--- [HARVEST] Node Finished: {node_name} ---")
+                    if isinstance(node_output, dict) and node_output:
+                        session_manager.update_session_state(session_id, node_output)
             
             updated_session_object = session_manager.get_session(session_id)
             academic_papers = updated_session_object["state"].get("academic_papers", {})

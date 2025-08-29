@@ -206,7 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const runGraph = async (payload, endpointUrl) => {
-        resetUIForNewRun(false);
+        resetUIForNewRun(true);
         startLogStream();
         try {
             const response = await fetch(endpointUrl, {
