@@ -140,22 +140,33 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     workflow.add_edge("update_rag_index", "metrics")
     
     def assess_progress_and_decide_path(state: GraphState):
-        # First, check for code execution failure, which is a reason to loop again
-        if state.get("is_code_request") and not state.get("synthesis_execution_success", True):
-            logging.warning("Code execution failed. Attempting another epoch.")
-            if state["epoch"] >= state["max_epochs"]:
-                logging.error(f"Final epoch ({state['epoch']}) finished after code failure. Ending run.")
-                return END
-            else:
-                return "reframe_and_decompose"
-        
-        # If code execution succeeded OR it's not a code request, use the standard epoch check
-        if state["epoch"] >= state["max_epochs"]:
-            logging.info(f"LOG: Final epoch ({state['epoch']}) finished. Proceeding to end state.")
+        """
+        Decides whether to continue to the next epoch or end the graph execution.
+        This corrected version ensures the graph runs for the specified number of epochs
+        for both code and text generation, allowing for iterative improvement.
+        """
+        # The 'metrics' node has already incremented the epoch counter for the *next* cycle.
+        # So, state['epoch'] is 1 at the end of the first pass.
+        current_epoch_completed = state["epoch"]
+        max_epochs = state["max_epochs"]
+
+        logging.info(f"--- [DECISION] Assessing progress. Epoch {current_epoch_completed-1} Complete. Max Epochs: {max_epochs} ---")
+
+        # The primary condition for continuing is whether we have completed the desired number of epochs.
+        if current_epoch_completed >= max_epochs:
+            logging.info(f"Final epoch finished. Proceeding to end state.")
             return END
         else:
+            # If we are continuing, log the reason for code-based requests.
+            if state.get("is_code_request"):
+                if not state.get("synthesis_execution_success", False):
+                    logging.warning("Code execution failed. Proceeding to next epoch to attempt a fix.")
+                else:
+                    logging.info("Code execution was successful. Proceeding to next epoch for potential improvement.")
+            
             return "reframe_and_decompose"
 
+    # This part remains the same
     workflow.add_conditional_edges(
         "metrics",
         assess_progress_and_decide_path,
