@@ -39,6 +39,9 @@ document.addEventListener('DOMContentLoaded', () => {
         continueTrainingBtn: document.getElementById('continue-training-btn'),
         exportQnnButton: document.getElementById('export-qnn-button'),
         mbtiGrid: document.querySelector('.mbti-grid'),
+        inferencePrompt: document.getElementById('inference-prompt'),
+        additionalEpochsInput: document.getElementById('additional-epochs'),
+        currentEpochInfo: document.getElementById('current-epoch-info'),
     };
 
     // --- State Management ---
@@ -446,18 +449,36 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!file) { state.importedStateContent = null; return; }
             const reader = new FileReader();
             reader.onload = (event) => {
-                state.importedStateContent = event.target.result;
-                elements.loadedFilename.textContent = file.name;
-                elements.importedQnnInfo.classList.remove('hidden');
-                elements.graphArchitectureSection.classList.add('hidden');
+                try {
+                    state.importedStateContent = event.target.result;
+                    const loadedState = JSON.parse(state.importedStateContent);
+
+                    // Populate Inference Card
+                    elements.inferencePrompt.value = loadedState.original_request || '';
+
+                    // Populate Continue Training Card
+                    if (typeof loadedState.epoch === 'number') {
+                        elements.currentEpochInfo.textContent = `This network has completed ${loadedState.epoch} epoch(s).`;
+                        elements.currentEpochInfo.classList.remove('hidden');
+                    } else {
+                        elements.currentEpochInfo.classList.add('hidden');
+                    }
+
+                    elements.loadedFilename.textContent = file.name;
+                    elements.importedQnnInfo.classList.remove('hidden');
+                    elements.graphArchitectureSection.classList.add('hidden');
+                } catch (err) {
+                    alert(`Error parsing QNN file: ${err.message}`);
+                    state.importedStateContent = null;
+                }
             };
             reader.readAsText(file);
         });
 
         elements.inferenceOnlyBtn.addEventListener('click', () => {
             if (!state.importedStateContent) { alert("No QNN file loaded."); return; }
-            const newPrompt = prompt("Enter the prompt for the inference run:", document.getElementById('prompt').value);
-            if (!newPrompt || !newPrompt.trim()) { alert("A prompt is required."); return; }
+            const newPrompt = elements.inferencePrompt.value.trim();
+            if (!newPrompt) { alert("A prompt is required for inference."); return; }
             runInference({ imported_state: JSON.parse(state.importedStateContent), prompt: newPrompt });
         });
         
@@ -466,25 +487,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert("No QNN file loaded.");
                 return;
             }
-    
-            const additionalEpochs = prompt("Enter the number of additional epochs to run:", "3");
+            const additionalEpochs = elements.additionalEpochsInput.value;
             if (!additionalEpochs || isNaN(parseInt(additionalEpochs)) || parseInt(additionalEpochs) <= 0) {
-                alert("Please enter a valid number of epochs.");
+                alert("Please enter a valid number of additional epochs.");
                 return;
             }
             
             const importedState = JSON.parse(state.importedStateContent);
-            
             const currentEpoch = importedState.epoch || 0;
             const newMaxEpochs = currentEpoch + parseInt(additionalEpochs);
             
-            // Update the max_epochs in the state before sending it
+            // Update the num_epochs in the state's params before sending
             if(importedState.params) {
                 importedState.params.num_epochs = newMaxEpochs;
+            } else {
+                // If for some reason params doesn't exist, create it
+                importedState.params = { num_epochs: newMaxEpochs };
             }
-            importedState.max_epochs = newMaxEpochs;
     
-            // Call the generic run function
             runGraph({ imported_state: importedState }, '/continue_run_from_state');
         });
 

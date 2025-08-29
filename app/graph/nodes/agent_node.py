@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
@@ -121,7 +122,7 @@ This is a log of your previous proposed solutions and reasonings (memory), and d
 
 def create_agent_node(node_id: str):
     """Factory for creating an agent node that is aware of the execution context."""
-    async def agent_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def agent_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         """Wrapper that retrieves services and calls the core logic."""
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)

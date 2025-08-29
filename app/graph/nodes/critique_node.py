@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import CritiqueAgentConfig
@@ -37,7 +38,7 @@ async def _critique_node_logic(state: GraphState, services: ServiceContext, crit
 
 def create_critique_node(critique_config: CritiqueAgentConfig):
     """Factory for creating a critique node based on a persona from the config."""
-    async def critique_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def critique_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:

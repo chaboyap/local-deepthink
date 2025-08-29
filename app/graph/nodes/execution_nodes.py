@@ -4,6 +4,7 @@ import io
 import re
 import logging
 from contextlib import redirect_stdout, redirect_stderr
+from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.state_manager import session_manager
@@ -66,7 +67,7 @@ async def _code_execution_node_logic(state: GraphState, services: ServiceContext
 
 def create_code_execution_node():
     """Creates node to execute and validate the synthesized code."""
-    async def code_execution_node_wrapper(state: GraphState, config: dict):
+    async def code_execution_node_wrapper(state: GraphState, config: RunnableConfig):
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:

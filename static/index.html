@@ -21,23 +21,39 @@
     <div class="container">
         <div id="qnn-import-container" class="section qnn-import-section">
             <h2>Load a Pre-Trained Graph (QNN)</h2>
-            <p>Import a previously exported QNN JSON file to run in inference-only mode.</p>
+            <p>Import a QNN file to resume training or apply the agent network to a new task.</p>
             <form id="import-qnn-form">
                 <label for="qnn-file-input">Select QNN File</label>
                 <input type="file" id="qnn-file-input" accept=".json">
             </form>
             <div id="imported-qnn-info" class="hidden">
-                <p><strong>File Loaded:</strong> <span id="loaded-filename"></span></p>
-                <p>A QNN file has been loaded. You can modify the prompt below. Then, click to run inference.</p>
-                <div id="inference-options">
-                    <button id="inference-only-btn">Run Inference Only</button>
-                    <button id="continue-training-btn">Continue Training</button>
+                <p class="file-loaded-text"><strong>File Loaded:</strong> <span id="loaded-filename"></span></p>
+                
+                <div class="qnn-action-grid">
+                    <!-- Action Card 1: Inference -->
+                    <div class="qnn-action-card">
+                        <h3>Apply This Network to a New Task (Inference)</h3>
+                        <p>Use the loaded agent network as an "expert team" to solve a new problem without further training. This is fast and efficient.</p>
+                        <label for="inference-prompt">New Prompt for Inference:</label>
+                        <textarea id="inference-prompt" placeholder="Enter the new, specific task for the expert agent network..."></textarea>
+                        <button id="inference-only-btn">Run Inference</button>
+                    </div>
+
+                    <!-- Action Card 2: Continue Training -->
+                    <div class="qnn-action-card">
+                        <h3>Resume and Continue Training</h3>
+                        <p>Continue the training process from where this QNN file left off. Use this for crash recovery or to further refine the network on the original problem.</p>
+                        <p class="epoch-context hidden" id="current-epoch-info"></p>
+                        <label for="additional-epochs">Number of Additional Epochs to Run:</label>
+                        <input type="number" id="additional-epochs" value="3" min="1" required>
+                        <button id="continue-training-btn">Continue Training</button>
+                    </div>
                 </div>
             </div>
         </div>
 
         <div id="graph-architecture-section" class="section">
-            <h2>Graph Architecture</h2>
+            <h2>Create a New Graph</h2>
             <form id="graph-params-form">
                 <!-- Debug Options -->
                 <div class="form-group-horizontal">
@@ -152,3 +168,4 @@
     <!-- This is your application's own code and MUST be served locally -->
     <script src="/static/js/main.js"></script>
 </body>
+</html>

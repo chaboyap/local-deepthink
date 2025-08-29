@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
@@ -88,7 +89,7 @@ async def _synthesis_node_logic(state: GraphState, services: ServiceContext) -> 
         
 def create_synthesis_node():
     """Creates the node that synthesizes the final layer of agent outputs into a single solution."""
-    async def synthesis_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def synthesis_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:
@@ -158,7 +159,7 @@ async def _final_harvest_node_logic(state: GraphState, services: ServiceContext,
     
 def create_final_harvest_node(num_questions):
     """Creates the final harvest node for generating the comprehensive report."""
-    async def final_harvest_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def final_harvest_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:

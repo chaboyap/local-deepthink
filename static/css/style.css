@@ -15,7 +15,7 @@ body {
     font-size: 16px;
     line-height: 1.6;
 }
-h1, h2 {
+h1, h2, h3 {
     color: var(--text-color);
     border-bottom: 1px solid var(--secondary-color);
     padding-bottom: 0.5rem;
@@ -29,6 +29,11 @@ h1 {
 }
 h2 {
     font-size: 1.75rem;
+}
+h3 {
+    font-size: 1.25rem;
+    border-bottom: none;
+    margin-top: 1.5rem;
 }
 .container {
     width: 100%;
@@ -211,7 +216,7 @@ pre {
 .diagnostic-user-message { background-color: #0056b3; }
 #code-reasoning { white-space: pre-wrap; }
 
-/* QNN Import Styles */
+/* QNN Import and Action Styles */
 .qnn-import-section {
     border: 2px dashed var(--accent-color);
     padding: 1.5rem;
@@ -229,24 +234,51 @@ pre {
 .qnn-import-section input[type="file"] {
     display: none;
 }
-#imported-qnn-info {
+#imported-qnn-info .file-loaded-text {
     background-color: #1c2e4a;
     padding: 1rem;
     border-radius: var(--border-radius);
     margin-top: 1rem;
+    text-align: center;
+    border: 1px solid #007bff;
+}
+.qnn-action-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-top: 2rem;
     text-align: left;
 }
-#inference-options {
+.qnn-action-card {
+    background-color: #1c1e25;
+    padding: 1.5rem;
+    border-radius: var(--border-radius);
+    border: 1px solid var(--secondary-color);
     display: flex;
-    gap: 1rem;
-    justify-content: center;
-    margin-top: 1rem;
+    flex-direction: column;
 }
-#inference-options button {
+.qnn-action-card p {
+    font-size: 0.9rem;
+    color: #b0b0b0;
+    flex-grow: 1; /* Makes cards equal height */
+}
+.qnn-action-card .epoch-context {
+    font-style: italic;
+    font-size: 0.9rem;
+    color: #00aaff;
+    background-color: var(--secondary-color);
+    padding: 0.5rem;
+    border-radius: var(--border-radius);
+    margin-bottom: 1rem;
+    flex-grow: 0;
+}
+.qnn-action-card button {
+    margin-top: auto; /* Pushes button to the bottom */
+}
+#inference-only-btn {
     background-color: #007bff;
-    width: auto;
 }
-#inference-options button:hover:not(:disabled) {
+#inference-only-btn:hover:not(:disabled) {
     background-color: #0056b3;
 }
 #export-qnn-button {

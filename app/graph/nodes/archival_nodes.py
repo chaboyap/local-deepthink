@@ -5,6 +5,7 @@ import re
 import traceback
 import logging
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.rag.raptor import RAPTOR
 from app.services.prompt_service import prompt_service
@@ -61,7 +62,7 @@ async def _update_rag_node_logic(state: GraphState, services: ServiceContext, en
     
 def create_update_rag_index_node():
     """Creates node to build/update the RAPTOR RAG index."""
-    async def update_rag_node_wrapper(state: GraphState, config: dict):
+    async def update_rag_node_wrapper(state: GraphState, config: RunnableConfig):
         """Wrapper that retrieves services and calls the core logic."""
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
@@ -71,7 +72,7 @@ def create_update_rag_index_node():
         services: ServiceContext = session["services"]
         return await _update_rag_node_logic(state, services, end_of_run=False)
 
-    def update_rag_node_final_wrapper(state: GraphState, config: dict):
+    def update_rag_node_final_wrapper(state: GraphState, config: RunnableConfig):
         """Special wrapper for the end_of_run=True case."""
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
@@ -111,7 +112,7 @@ async def _metrics_node_logic(state: GraphState, services: ServiceContext):
     
 def create_metrics_node():
     """Creates node for calculating perplexity metrics."""
-    async def metrics_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def metrics_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:

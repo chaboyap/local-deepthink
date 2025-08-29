@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import random
-
+from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
@@ -73,7 +73,7 @@ async def _reframe_node_logic(state: GraphState, services: ServiceContext) -> di
 
 def create_reframe_and_decompose_node():
     """Creates node to re-frame and decompose the problem after an epoch."""
-    async def reframe_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def reframe_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:
@@ -139,7 +139,7 @@ async def _update_prompts_node_logic(state: GraphState, services: ServiceContext
 
 def create_update_agent_prompts_node():
     """Creates the node that updates agent prompts based on the newly reframed problem."""
-    async def update_prompts_node_wrapper(state: GraphState, config: dict) -> dict:
+    async def update_prompts_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
         session_id = config["configurable"]["session_id"]
         session = session_manager.get_session(session_id)
         if not session:
