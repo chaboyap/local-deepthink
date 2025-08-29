@@ -5,6 +5,7 @@ import uuid
 from typing import Dict, Any
 from cachetools import TTLCache
 from app.core.config import settings
+from app.core.context import ServiceContext
 
 class SessionManager:
     """
@@ -23,14 +24,15 @@ class SessionManager:
         # The final reports should also expire to prevent a memory leak.
         self.final_reports: TTLCache[str, Dict[str, str]] = TTLCache(maxsize=1024, ttl=session_ttl_seconds)
 
-    def create_session(self, initial_state: Dict[str, Any]) -> str:
-        """Creates a new session and returns its ID."""
+    def create_session(self, initial_state: Dict[str, Any], service_context: ServiceContext) -> str:
+        """Creates a new session with separated state and services."""
         session_id = str(uuid.uuid4())
         initial_state["session_id"] = session_id
 
         # This lock is unique to each session and will be used by the API endpoints
         self.sessions[session_id] = {
             "state": initial_state,
+            "services": service_context,
             "lock": asyncio.Lock()
         }
         return session_id
@@ -70,7 +72,7 @@ class SessionManager:
         """Sets the final state of a session after the graph run completes."""
         session = self.get_session(session_id)
         if session:
-            # Only update the state, leave the lock intact
+            # Only update the state, leave the lock and services intact
             session["state"] = final_state
 
     def store_report(self, session_id: str, papers: Dict[str, str]):

@@ -28,6 +28,11 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     total_agents = num_agents_per_layer * cot_trace_depth
 
     logging.info("--- Decomposing Original Problem into Subproblems ---")
+    
+    # PHASE 1: Initial Prompt Generation.
+    # This block performs the expensive, one-time setup of decomposing the problem
+    # and using the AgentFactory to generate the initial system prompts for all agents.
+    # This phase does not build the graph itself but prepares the necessary inputs.
     try:
         timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
         decomposition_result = await asyncio.wait_for(
@@ -62,17 +67,16 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
         logging.critical(f"FATAL: Agent prompt generation or problem decomposition failed. Graph setup cannot continue. Error: {e}", exc_info=True)
         raise e
     
+    # PHASE 2: Graph Definition and Construction.
+    # This block defines the graph topology: registering all nodes and connecting them with edges.
     workflow = StateGraph(GraphState)
 
+     # 2.1: Node Registration
     def start_epoch(state: GraphState):
         current_epoch_display = state['epoch']
         logging.info(f"==================== STARTING EPOCH {current_epoch_display + 1} / {state['max_epochs']} ====================")
-        # Reset critiques to ensure no data bleeds between epochs.
         return {"critiques": {}}
-    
     workflow.add_node("start_epoch", start_epoch)
-    workflow.set_entry_point("start_epoch")
-
     for i, layer_prompts in enumerate(all_layers_prompts):
         for j, _ in enumerate(layer_prompts):
             node_id = f"agent_{i}_{j}"
@@ -81,7 +85,6 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     workflow.add_node("synthesis", create_synthesis_node())
     if is_code: workflow.add_node("code_execution", create_code_execution_node())
 
-    # Add critique nodes if they are defined in the config
     critique_configs = settings.hyperparameters.critique_agents
     critique_node_ids = []
     if critique_configs:
@@ -92,21 +95,22 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
             critique_node_ids.append(node_id)
             
     workflow.add_node("archive_epoch_outputs", create_archive_epoch_outputs_node())
-    update_rag_node_func = create_update_rag_index_node(summarizer_llm, embeddings_model)
-    workflow.add_node("update_rag_index", update_rag_node_func)
-    workflow.add_node("metrics", create_metrics_node(llm))
+    workflow.add_node("update_rag_index", create_update_rag_index_node())
+    workflow.add_node("metrics", create_metrics_node())
     workflow.add_node("reframe_and_decompose", create_reframe_and_decompose_node())
     workflow.add_node("update_prompts", create_update_agent_prompts_node())
     
     logging.info("--- Connecting Graph Nodes ---")
-
+    # 2.2: Edge Connectivity
+    workflow.set_entry_point("start_epoch")
     layer_node_ids = [[f"agent_{i}_{j}" for j in range(num_agents_per_layer)] for i in range(cot_trace_depth)]
 
+    # Define the forward pass: from start, through agent layers, to synthesis.
     # The start_epoch node fans out to trigger every agent in the first layer.
     for start_node in layer_node_ids[0]:
         workflow.add_edge("start_epoch", start_node)
 
-    # Connect subsequent layers
+    # ARCH: Connect layers sequentially, with each layer fully connected to the next.
     for i in range(cot_trace_depth - 1):
         source_nodes = layer_node_ids[i]
         destination_nodes = layer_node_ids[i+1]
@@ -116,22 +120,19 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
             for dest in destination_nodes:
                 workflow.add_edge(source, dest)
 
-    # Connect last layer to synthesis
     # Each node in the final layer must be connected to the synthesis node.
     for final_agent_node in layer_node_ids[-1]:
         workflow.add_edge(final_agent_node, "synthesis")
 
-    # Determine the exit node of the forward pass
+    # Define the reflection/learning pass: from synthesis, through critique, to prompt update.
     forward_pass_exit_node = "code_execution" if is_code else "synthesis"
     
-    # If critique agents are configured, route the flow through them
     if critique_node_ids:
         # We must iterate and create an edge to each critique node individually.
         for critique_node in critique_node_ids:
             workflow.add_edge(forward_pass_exit_node, critique_node)
         
-        # After all critiques are done, they fan-in to the archival step.
-        # Convert the list to a tuple to make it a valid, hashable source key.
+        # NOTE: LangGraph requires a tuple of node names as a source key for fan-in edges.
         workflow.add_edge(tuple(critique_node_ids), "archive_epoch_outputs")
     else: # Otherwise, connect directly to the archival step
         workflow.add_edge(forward_pass_exit_node, "archive_epoch_outputs")
@@ -139,6 +140,7 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     workflow.add_edge("archive_epoch_outputs", "update_rag_index")
     workflow.add_edge("update_rag_index", "metrics")
     
+    # 2.3: Conditional Edge for Epoch Continuation
     def assess_progress_and_decide_path(state: GraphState):
         """
         Decides whether to continue to the next epoch or end the graph execution.
@@ -166,7 +168,6 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
             
             return "reframe_and_decompose"
 
-    # This part remains the same
     workflow.add_conditional_edges(
         "metrics",
         assess_progress_and_decide_path,
@@ -179,6 +180,7 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     workflow.add_edge("reframe_and_decompose", "update_prompts")
     workflow.add_edge("update_prompts", "start_epoch")
 
+    # PHASE 3: Compilation and Return
     graph = workflow.compile()
     
     logging.info("Graph compiled. Visualization ready.", extra={

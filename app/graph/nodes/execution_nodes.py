@@ -6,6 +6,8 @@ import logging
 from contextlib import redirect_stdout, redirect_stderr
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
+from app.core.state_manager import session_manager
+from app.core.context import ServiceContext
 
 def execute_code_in_sandbox(code: str) -> (bool, str):
     """
@@ -32,37 +34,45 @@ def execute_code_in_sandbox(code: str) -> (bool, str):
     except Exception as e:
         return False, f"{output_buffer.getvalue()}\n\nERROR: {type(e).__name__}: {e}"
 
+async def _code_execution_node_logic(state: GraphState, services: ServiceContext):
+    if not state.get("is_code_request"):
+        return {"synthesis_execution_success": True} 
+
+    logging.info("--- [SANDBOX] Testing Synthesized Code ---")
+    synthesized_code = state.get("final_solution", {}).get("proposed_solution", "")
+    
+    success, output = execute_code_in_sandbox(synthesized_code)
+    
+    logging.info(f"--- [SANDBOX] Synthesized Code Result: {'Success' if success else 'Failure'} ---")
+    logging.info(output)
+
+    if success:
+        module_card_chain = prompt_service.create_chain(services.llm, "module_card")
+        module_card = await module_card_chain.ainvoke({"code": synthesized_code})
+        
+        logging.info("--- [MODULE CARD] ---")
+        logging.info(module_card)
+        
+        new_modules = state.get("modules", []) + [{"code": synthesized_code, "card": module_card}]
+        new_context_queue = state.get("synthesis_context_queue", []) + [module_card]
+        
+        return {
+            "synthesis_execution_success": True,
+            "modules": new_modules,
+            "synthesis_context_queue": new_context_queue
+        }
+    else:
+        return {"synthesis_execution_success": False}
 
 def create_code_execution_node():
     """Creates node to execute and validate the synthesized code."""
-    async def code_execution_node(state: GraphState):
-        if not state.get("is_code_request"):
-            return {"synthesis_execution_success": True} 
-
-        logging.info("--- [SANDBOX] Testing Synthesized Code ---")
-        synthesized_code = state.get("final_solution", {}).get("proposed_solution", "")
+    async def code_execution_node_wrapper(state: GraphState, config: dict):
+        session_id = config["configurable"]["session_id"]
+        session = session_manager.get_session(session_id)
+        if not session:
+            raise RuntimeError(f"Session {session_id} not found for code execution node")
         
-        success, output = execute_code_in_sandbox(synthesized_code)
-        
-        logging.info(f"--- [SANDBOX] Synthesized Code Result: {'Success' if success else 'Failure'} ---")
-        logging.info(output)
-
-        if success:
-            module_card_chain = prompt_service.create_chain(state["llm"], "module_card")
-            module_card = await module_card_chain.ainvoke({"code": synthesized_code})
-            
-            logging.info("--- [MODULE CARD] ---")
-            logging.info(module_card)
-            
-            new_modules = state.get("modules", []) + [{"code": synthesized_code, "card": module_card}]
-            new_context_queue = state.get("synthesis_context_queue", []) + [module_card]
-            
-            return {
-                "synthesis_execution_success": True,
-                "modules": new_modules,
-                "synthesis_context_queue": new_context_queue
-            }
-        else:
-            return {"synthesis_execution_success": False}
+        services: ServiceContext = session["services"]
+        return await _code_execution_node_logic(state, services)
                    
-    return code_execution_node
+    return code_execution_node_wrapper

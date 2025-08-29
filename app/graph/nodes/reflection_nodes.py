@@ -11,122 +11,140 @@ from app.services.structured_output_adapter import get_structured_output
 from app.services.schemas import (
     NewProblemOutput, DecompositionOutput, AgentAnalysisOutput
 )
+from app.core.state_manager import session_manager
+from app.core.context import ServiceContext
+
+async def _reframe_node_logic(state: GraphState, services: ServiceContext) -> dict:
+    logging.info("--- [REFLECTION] Re-framing Problem for Next Epoch ---")
+    llm, llm_config = services.llm, state["llm_config"]
+    timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
+
+    # Get critiques from the state to pass to the reframer prompt
+    critiques = state.get("critiques", {})
+    critique_str = "No critiques were provided for this epoch."
+    if critiques:
+        critique_str = "\n\n".join(
+            f"--- Critique from {name} ---\n{text}" for name, text in critiques.items()
+        )
+    
+    try:
+        new_problem_obj = await asyncio.wait_for(
+            get_structured_output(
+                llm=llm,
+                provider_config=llm_config,
+                prompt_template=prompt_service.get_template("problem_reframer"),
+                input_data={
+                    "original_request": state["original_request"],
+                    "final_solution": json.dumps(state.get("final_solution")),
+                    "current_problem": state.get("current_problem"),
+                    "critiques": critique_str # Pass critiques to the prompt
+                },
+                pydantic_schema=NewProblemOutput,
+                context_identifier=f"ReframeNode:Epoch{state.get('epoch', 0)}"
+            ),
+            timeout=timeout
+        )
+        if not new_problem_obj: raise ValueError("Re-framer returned no valid output.")
+        new_problem = new_problem_obj.new_problem
+        logging.info(f"SUCCESS: New problem framed: {new_problem}")
+
+        num_agents = sum(len(layer) for layer in state["all_layers_prompts"])
+        
+        decomp_obj = await asyncio.wait_for(
+            get_structured_output(
+                llm=llm,
+                provider_config=llm_config,
+                prompt_template=prompt_service.get_template("problem_decomposition"),
+                input_data={"problem": new_problem, "num_sub_problems": num_agents},
+                pydantic_schema=DecompositionOutput
+            ),
+            timeout=timeout
+        )
+        if not decomp_obj or len(decomp_obj.sub_problems) != num_agents:
+             raise ValueError(f"Decomposition of new problem failed. Expected {num_agents} problems, got {len(decomp_obj.sub_problems) if decomp_obj else 0}.")
+
+        new_map = {f"agent_{i}_{j}": decomp_obj.sub_problems[i * len(state['all_layers_prompts'][i]) + j]
+                   for i in range(len(state['all_layers_prompts'])) for j in range(len(state['all_layers_prompts'][i]))}
+
+        return {"decomposed_problems": new_map, 'current_problem': new_problem}
+    except Exception as e:
+        logging.error(f"REFRAME_NODE_ERROR: {e}. Problem will not be updated.", exc_info=True)
+        return {}
 
 def create_reframe_and_decompose_node():
     """Creates node to re-frame and decompose the problem after an epoch."""
-    async def reframe_node(state: GraphState) -> dict:
-        logging.info("--- [REFLECTION] Re-framing Problem for Next Epoch ---")
-        llm, llm_config = state["llm"], state["llm_config"]
-        timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
-
-        # Get critiques from the state to pass to the reframer prompt
-        critiques = state.get("critiques", {})
-        critique_str = "No critiques were provided for this epoch."
-        if critiques:
-            critique_str = "\n\n".join(
-                f"--- Critique from {name} ---\n{text}" for name, text in critiques.items()
-            )
+    async def reframe_node_wrapper(state: GraphState, config: dict) -> dict:
+        session_id = config["configurable"]["session_id"]
+        session = session_manager.get_session(session_id)
+        if not session:
+            raise RuntimeError(f"Session {session_id} not found for reframe node")
         
-        try:
-            new_problem_obj = await asyncio.wait_for(
-                get_structured_output(
-                    llm=llm,
-                    provider_config=llm_config,
-                    prompt_template=prompt_service.get_template("problem_reframer"),
-                    input_data={
-                        "original_request": state["original_request"],
-                        "final_solution": json.dumps(state.get("final_solution")),
-                        "current_problem": state.get("current_problem"),
-                        "critiques": critique_str # Pass critiques to the prompt
-                    },
-                    pydantic_schema=NewProblemOutput,
-                    context_identifier=f"ReframeNode:Epoch{state.get('epoch', 0)}"
-                ),
-                timeout=timeout
-            )
-            if not new_problem_obj: raise ValueError("Re-framer returned no valid output.")
-            new_problem = new_problem_obj.new_problem
-            logging.info(f"SUCCESS: New problem framed: {new_problem}")
+        services: ServiceContext = session["services"]
+        return await _reframe_node_logic(state, services)
+    return reframe_node_wrapper
 
-            num_agents = sum(len(layer) for layer in state["all_layers_prompts"])
+async def _update_prompts_node_logic(state: GraphState, services: ServiceContext) -> dict:
+    logging.info("--- [REFLECTION] Updating Agent Prompts (Targeted Backpropagation) ---")
+    llm, llm_config, params = services.llm, state["llm_config"], state["params"]
+    
+    prompts_copy = [layer[:] for layer in state["all_layers_prompts"]]
+    update_failure_count = 0
+    timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
+    
+    dense_spanner_chain = prompt_service.create_chain(llm, "dense_spanner", **params.model_dump())
+
+    for i in range(len(prompts_copy) - 1, -1, -1):
+        for j, agent_prompt in enumerate(prompts_copy[i]):
+            agent_id = f"agent_{i}_{j}"
             
-            decomp_obj = await asyncio.wait_for(
-                get_structured_output(
-                    llm=llm,
-                    provider_config=llm_config,
-                    prompt_template=prompt_service.get_template("problem_decomposition"),
-                    input_data={"problem": new_problem, "num_sub_problems": num_agents},
-                    pydantic_schema=DecompositionOutput
-                ),
-                timeout=timeout
-            )
-            if not decomp_obj or len(decomp_obj.sub_problems) != num_agents:
-                 raise ValueError(f"Decomposition of new problem failed. Expected {num_agents} problems, got {len(decomp_obj.sub_problems) if decomp_obj else 0}.")
-
-            new_map = {f"agent_{i}_{j}": decomp_obj.sub_problems[i * len(state['all_layers_prompts'][i]) + j]
-                       for i in range(len(state['all_layers_prompts'])) for j in range(len(state['all_layers_prompts'][i]))}
-
-            return {"decomposed_problems": new_map, 'current_problem': new_problem}
-        except Exception as e:
-            logging.error(f"REFRAME_NODE_ERROR: {e}. Problem will not be updated.", exc_info=True)
-            return {}
-    return reframe_node
+            try:
+                analysis = await asyncio.wait_for(
+                    get_structured_output(
+                        llm=llm,
+                        provider_config=llm_config,
+                        prompt_template=prompt_service.get_template("attribute_and_hard_request_generator"),
+                        input_data={"agent_prompt": agent_prompt, "vector_word_size": params.vector_word_size},
+                        pydantic_schema=AgentAnalysisOutput
+                    ), timeout=timeout
+                )
+                if not analysis: raise ValueError("Agent analysis returned no output.")
+                
+                sub_problem = state.get("decomposed_problems", {}).get(agent_id, state["original_request"])
+                agent_persona = state.get("agent_personas", {}).get(agent_id, {})
+                
+                new_prompt = await asyncio.wait_for(dense_spanner_chain.ainvoke({
+                    "attributes": analysis.attributes, 
+                    "hard_request": analysis.hard_request,
+                    "sub_problem": sub_problem,
+                    "mbti_type": agent_persona.get("mbti_type"),
+                    "name": agent_persona.get("name")
+                }), timeout=timeout)
+                prompts_copy[i][j] = new_prompt
+            except Exception as e:
+                logging.error(f"PROMPT_UPDATE_ERROR for {agent_id}: {e}. Keeping original prompt.", exc_info=True)
+                update_failure_count += 1
+    
+    if update_failure_count > 0:
+        total_agents = sum(len(layer) for layer in prompts_copy)
+        logging.warning(f"{update_failure_count}/{total_agents} agents failed to update prompts.")
+    
+    logging.info(f"--- Finished Epoch {state.get('epoch', 0)}. ---")
+    previous_solution_str = json.dumps(state.get("final_solution")) if state.get("final_solution") else ""
+    return { 
+        "all_layers_prompts": prompts_copy, 
+        "agent_outputs": {}, 
+        "previous_solution": previous_solution_str,
+        "final_solution": None
+    }
 
 def create_update_agent_prompts_node():
     """Creates the node that updates agent prompts based on the newly reframed problem."""
-    async def update_prompts_node(state: GraphState) -> dict:
-        logging.info("--- [REFLECTION] Updating Agent Prompts (Targeted Backpropagation) ---")
-        llm, llm_config, params = state["llm"], state["llm_config"], state["params"]
+    async def update_prompts_node_wrapper(state: GraphState, config: dict) -> dict:
+        session_id = config["configurable"]["session_id"]
+        session = session_manager.get_session(session_id)
+        if not session:
+            raise RuntimeError(f"Session {session_id} not found for update prompts node")
         
-        prompts_copy = [layer[:] for layer in state["all_layers_prompts"]]
-        update_failure_count = 0
-        timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
-        
-        # Partially format the chain with static parameters for efficiency
-        dense_spanner_chain = prompt_service.create_chain(llm, "dense_spanner", **params.model_dump())
-
-        for i in range(len(prompts_copy) - 1, -1, -1):
-            for j, agent_prompt in enumerate(prompts_copy[i]):
-                agent_id = f"agent_{i}_{j}"
-                
-                try:
-                    analysis = await asyncio.wait_for(
-                        get_structured_output(
-                            llm=llm,
-                            provider_config=llm_config,
-                            prompt_template=prompt_service.get_template("attribute_and_hard_request_generator"),
-                            input_data={"agent_prompt": agent_prompt, "vector_word_size": params.vector_word_size},
-                            pydantic_schema=AgentAnalysisOutput
-                        ), timeout=timeout
-                    )
-                    if not analysis: raise ValueError("Agent analysis returned no output.")
-                    
-                    sub_problem = state.get("decomposed_problems", {}).get(agent_id, state["original_request"])
-                    agent_persona = state.get("agent_personas", {}).get(agent_id, {})
-                    
-                    new_prompt = await asyncio.wait_for(dense_spanner_chain.ainvoke({
-                        "attributes": analysis.attributes, 
-                        "hard_request": analysis.hard_request,
-                        "sub_problem": sub_problem,
-                        "mbti_type": agent_persona.get("mbti_type"),
-                        "name": agent_persona.get("name")
-                    }), timeout=timeout)
-                    prompts_copy[i][j] = new_prompt
-                except Exception as e:
-                    logging.error(f"PROMPT_UPDATE_ERROR for {agent_id}: {e}. Keeping original prompt.", exc_info=True)
-                    update_failure_count += 1
-        
-        if update_failure_count > 0:
-            total_agents = sum(len(layer) for layer in prompts_copy)
-            logging.warning(f"{update_failure_count}/{total_agents} agents failed to update prompts.")
-        
-        logging.info(f"--- Finished Epoch {state.get('epoch', 0)}. ---")
-        # Clear out state for the next epoch, carrying over the solution from this one
-        previous_solution_str = json.dumps(state.get("final_solution")) if state.get("final_solution") else ""
-        return { 
-            "all_layers_prompts": prompts_copy, 
-            "agent_outputs": {}, 
-            "previous_solution": previous_solution_str,
-            "final_solution": None
-        }
-    return update_prompts_node
+        services: ServiceContext = session["services"]
+        return await _update_prompts_node_logic(state, services)
+    return update_prompts_node_wrapper

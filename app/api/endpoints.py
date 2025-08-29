@@ -7,17 +7,16 @@ import re
 import traceback
 import zipfile
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from fastapi import APIRouter, Request, Body, File, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 from langchain_core.documents import Document
 from langgraph.graph import StateGraph, END
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
 
-from app.core.config import settings
+from app.core.config import settings, ProviderConfig
 from app.core.state_manager import session_manager
+from app.core.context import ServiceContext
 from app.graph.nodes import (
     create_final_harvest_node, create_update_rag_index_node,
     create_synthesis_node, create_code_execution_node, create_agent_node
@@ -28,17 +27,39 @@ from app.services.llm_service import initialize_llms, LLMInitializationParams
 from app.services.prompt_service import prompt_service
 from app.api.schemas import GraphRunPayload, GraphRunParams
 from app.utils.exceptions import AgentExecutionError
-from app.utils.mock_llms import CoderMockLLM, MockLLM
 
 
 router = APIRouter()
 
+async def _initialize_session_context(params: GraphRunParams) -> Tuple[ServiceContext, Dict[str, ProviderConfig]]:
+    """Centralizes LLM initialization and creates the service context."""
+    init_params = LLMInitializationParams(
+        debug_mode=params.debug_mode,
+        coder_debug_mode=params.coder_debug_mode
+    )
+    (llm, llm_config), \
+    (synth_llm, synth_config), \
+    (summ_llm, summ_config), \
+    (embed_model, embed_config) = await initialize_llms(init_params)
+
+    services = ServiceContext(
+        llm=llm,
+        synthesizer_llm=synth_llm,
+        summarizer_llm=summ_llm,
+        embeddings_model=embed_model
+    )
+    
+    configs = {
+        "llm_config": llm_config,
+        "synthesizer_llm_config": synth_config,
+        "summarizer_llm_config": summ_config,
+        "embeddings_config": embed_config,
+    }
+    return services, configs
+
 @router.get("/config")
 async def get_app_config():
-    """
-    Provides essential configuration details to the frontend,
-    including the main model name and default hyperparameters.
-    """
+    """Provides essential configuration details to the frontend."""
     try:
         hyperparams = settings.hyperparameters
         frontend_defaults = {
@@ -70,18 +91,10 @@ async def build_and_run_graph(payload: GraphRunPayload):
     logging.info(f"--- Starting graph run with params: {payload.params.model_dump_json(indent=2)} ---")
  
     try:
-        init_params = LLMInitializationParams(
-            debug_mode=payload.params.debug_mode,
-            coder_debug_mode=payload.params.coder_debug_mode
-        )
-        (llm, llm_config), \
-        (synthesizer_llm, synthesizer_llm_config), \
-        (summarizer_llm, summarizer_llm_config), \
-        (embeddings_model, embeddings_config) = await initialize_llms(init_params)
+        service_context, llm_configs = await _initialize_session_context(payload.params)
+        logging.info("--- [SETUP] Initialized LLMs and Service Context successfully.")
         
-        logging.info("--- [SETUP] Initialized LLMs successfully.")
-        
-        request_is_code_chain = prompt_service.create_chain(llm, "request_is_code")
+        request_is_code_chain = prompt_service.create_chain(service_context.llm, "request_is_code")
         
         is_code_str = (await request_is_code_chain.ainvoke({"request": user_prompt})).lower().strip()
         is_code = "true" in is_code_str
@@ -93,55 +106,42 @@ async def build_and_run_graph(payload: GraphRunPayload):
 
         logging.info("--- [SETUP] Attempting to build graph workflow...")
         graph, initial_state_components = await build_graph_workflow(
-            payload.params, llm, llm_config, synthesizer_llm, summarizer_llm, embeddings_model, is_code
+            payload.params, 
+            service_context.llm, llm_configs['llm_config'], 
+            service_context.synthesizer_llm, 
+            service_context.summarizer_llm, 
+            service_context.embeddings_model, 
+            is_code
         )
         logging.info("--- [SETUP] Graph workflow built successfully.")
         
         initial_state = {
-            "previous_solution": "",
-            "chat_history": [],
-            "original_request": user_prompt,
-            "current_problem": user_prompt,
-            "epoch": 0,
-            "max_epochs": payload.params.num_epochs,
-            "params": payload.params,
-            "agent_outputs": {},
-            "memory": {},
-            "critiques": {},
-            "final_solution": None,
-            "perplexity_history": [],
-            "raptor_index": None,
-            "all_rag_documents": [],
-            "academic_papers": None,
-            "is_code_request": is_code,
-            "llm": llm,
-            "llm_config": llm_config,
-            "summarizer_llm": summarizer_llm,
-            "summarizer_llm_config": summarizer_llm_config,
-            "embeddings_model": embeddings_model,
-            "embeddings_config": embeddings_config,
-            "synthesizer_llm": synthesizer_llm,
-            "synthesizer_llm_config": synthesizer_llm_config,
-            "modules": [],
-            "synthesis_context_queue": [],
-            "synthesis_execution_success": True,
+            "previous_solution": "", "chat_history": [], "original_request": user_prompt,
+            "current_problem": user_prompt, "epoch": 0, "max_epochs": payload.params.num_epochs,
+            "params": payload.params, "agent_outputs": {}, "memory": {}, "critiques": {},
+            "final_solution": None, "perplexity_history": [], "all_rag_documents": [],
+            "academic_papers": None, "is_code_request": is_code,
+            "modules": [], "synthesis_context_queue": [], "synthesis_execution_success": True,
+            **llm_configs,
             **initial_state_components
         }
         
-        loggable_state = {k: (f"<{v.__class__.__name__}>" if hasattr(v, '__class__') and 'langchain' in str(v.__class__) else v) for k, v in initial_state.items()}
+        loggable_state = {k: v for k, v in initial_state.items() if not isinstance(v, GraphRunParams)}
+        loggable_state['params'] = initial_state['params'].model_dump()
         logging.info(f"--- Graph Initial State ---\n{json.dumps(loggable_state, indent=2, default=str)}")
         
-        session_id = session_manager.create_session(initial_state)
+        session_id = session_manager.create_session(initial_state, service_context)
         
         logging.info(f"--- Starting Execution (Epochs: {payload.params.num_epochs}) ---")
 
         try:
             recursion_limit = (payload.params.num_epochs * len(graph.nodes)) + 50
-            initial_session_object = session_manager.get_session(session_id)
-            if not initial_session_object:
-                raise RuntimeError("Failed to create and retrieve session immediately.")
 
-            async for output in graph.astream(initial_session_object['state'], {'recursion_limit': recursion_limit}):
+            # PATTERN: DI - Pass session_id via 'configurable' to enable nodes to locate their ServiceContext.
+            async for output in graph.astream(
+                initial_state, 
+                {'recursion_limit': recursion_limit, "configurable": {"session_id": session_id}}
+            ):
                 for node_name, node_output in output.items():
                     logging.info(f"--- Node Finished: {node_name} ---")
                     if isinstance(node_output, dict) and node_output:
@@ -149,8 +149,8 @@ async def build_and_run_graph(payload: GraphRunPayload):
         
         except AgentExecutionError as e:
             error_message = f"Execution halted due to a critical failure in agent '{e.node_id}'. Reason: {e.message}"
-            logging.error("--- FATAL EXECUTION ERROR ---")
-            logging.error(error_message)
+            logging.error("--- FATAL EXECUTION ERROR ---", extra={"ui_extra": None})
+            logging.error(error_message, extra={"ui_extra": None})
             return JSONResponse(content={"message": error_message}, status_code=500)
         
         final_session_object = session_manager.get_session(session_id)
@@ -186,6 +186,7 @@ async def build_and_run_graph(payload: GraphRunPayload):
 async def run_inference_from_state(payload: dict = Body(...)):
     """Runs inference on an imported QNN state without further training."""
     logging.info("--- [INFERENCE-ONLY] Received request to run inference from imported state. ---")
+    session_id = None
     try:
         imported_state = payload.get("imported_state")
         user_prompt = payload.get("prompt")
@@ -193,60 +194,56 @@ async def run_inference_from_state(payload: dict = Body(...)):
 
         if not imported_state or not user_prompt:
             return JSONResponse(content={"error": "Invalid payload. 'imported_state' and 'prompt' are required."}, status_code=400)
-
-        # Re-initialize LLM for the inference run
-        params = GraphRunParams(**params_dict)
-        init_params = LLMInitializationParams(
-            debug_mode=params.debug_mode,
-            coder_debug_mode=params.coder_debug_mode
-        )
-        (llm, _), (synthesizer_llm, _), _, _ = await initialize_llms(init_params)
         
+        params = GraphRunParams(**params_dict)
+        service_context, llm_configs = await _initialize_session_context(params)
+
         all_layers_prompts = imported_state.get("all_layers_prompts", [])
         if not all_layers_prompts:
             return JSONResponse(content={"error": "Imported state must contain 'all_layers_prompts'."}, status_code=400)
 
         inference_state = imported_state.copy()
         inference_state.update({
-            "original_request": user_prompt,
-            "current_problem": user_prompt,
-            "agent_outputs": {},
-            "synthesizer_llm": synthesizer_llm,
-            "llm": llm,
-            "is_code_request": True, # Assume inference is for code, can be improved
-            "synthesis_context_queue": imported_state.get("synthesis_context_queue", [])
+            "original_request": user_prompt, "current_problem": user_prompt,
+            "agent_outputs": {}, "is_code_request": True, 
+            "synthesis_context_queue": imported_state.get("synthesis_context_queue", []),
+            **llm_configs
         })
 
+        # ARCH: Create temporary session to satisfy node DI pattern during stateless inference.
+        # This session will auto-expire via TTLCache policy.
+        session_id = session_manager.create_session(inference_state, service_context)
+
+        # PHASE: Graph Definition - Statically define the inference workflow topology.
         workflow = StateGraph(GraphState)
 
-        # Add agent nodes
+        # 1. Node Registration
         for i, layer in enumerate(all_layers_prompts):
             for j in range(len(layer)):
                 node_id = f"agent_{i}_{j}"
                 workflow.add_node(node_id, create_agent_node(node_id))
 
-        # Add synthesis node
         workflow.add_node("synthesis", create_synthesis_node())
 
-        # Define layer node IDs for clarity
+        # 2. Edge Connectivity
         layer_node_ids = [[f"agent_{i}_{j}" for j in range(len(all_layers_prompts[i]))] for i in range(len(all_layers_prompts))]
         
-        # Set entry point for parallel execution of the first layer
+        # For parallel execution of the first layer
         workflow.set_entry_point(layer_node_ids[0])
         
-        # Connect subsequent layers correctly for parallel execution
+        # Correct for for parallel execution
         for i in range(len(layer_node_ids) - 1):
             workflow.add_edge(layer_node_ids[i], layer_node_ids[i+1])
         
-        # Connect last layer to synthesis
         workflow.add_edge(layer_node_ids[-1], "synthesis")
         workflow.add_edge("synthesis", END)
 
         graph = workflow.compile()
         logging.info("Inference graph compiled.", extra={'ui_extra': {'type': 'graph', 'data': graph.get_graph().draw_ascii()}})
         
+        # PATTERN: DI - Pass temporary session_id to enable node service location.
         final_result_node = None
-        async for output in graph.astream(inference_state):
+        async for output in graph.astream(inference_state, {"configurable": {"session_id": session_id}}):
              if "synthesis" in output:
                 final_result_node = output["synthesis"]
 
@@ -271,33 +268,17 @@ async def run_inference_from_state(payload: dict = Body(...)):
 @router.get("/export_qnn/{session_id}")
 async def export_qnn(session_id: str):
     """Exports the current state of a session graph to a JSON file."""
-    final_state = session_manager.get_final_state(session_id)
-    if not final_state:
-        session_object = session_manager.get_session(session_id)
-        if not session_object:
-            return JSONResponse(content={"error": "Session not found."}, status_code=404)
-        final_state = session_object.get('state')
+    session_object = session_manager.get_session(session_id)
+    if not session_object or not session_object.get('state'):
+        return JSONResponse(content={"error": "Session state not found or empty."}, status_code=404)
 
-    if not final_state:
-         return JSONResponse(content={"error": "Session state is empty."}, status_code=404)
+    state_to_export = session_object['state'].copy()
     
-    state_to_export = final_state.copy()
-    
-    # Remove non-serializable objects
-    keys_to_remove = [
-        'llm', 'synthesizer_llm', 'summarizer_llm', 'embeddings_model', 
-        'raptor_index', 'llm_config', 'synthesizer_llm_config', 
-        'summarizer_llm_config', 'embeddings_config'
-    ]
-    for key in keys_to_remove:
-        state_to_export.pop(key, None)
-    
-    # Serialize Pydantic and Document objects
     if 'params' in state_to_export and isinstance(state_to_export['params'], GraphRunParams):
         state_to_export['params'] = state_to_export['params'].model_dump()
-
     if 'all_rag_documents' in state_to_export:
-        state_to_export['all_rag_documents'] = [doc.dict() for doc in state_to_export['all_rag_documents']]
+        docs = state_to_export.get('all_rag_documents', [])
+        state_to_export['all_rag_documents'] = [doc.dict() for doc in docs if isinstance(doc, Document)]
 
     logging.info(f"--- [EXPORT] Exporting QNN for session {session_id} ---")
     return JSONResponse(
@@ -312,21 +293,23 @@ async def import_qnn(file: UploadFile = File(...)):
         content = await file.read()
         imported_data = json.loads(content)
         
-        # Deserialize Document objects
         if 'all_rag_documents' in imported_data:
             imported_data['all_rag_documents'] = [Document(**doc) for doc in imported_data['all_rag_documents']]
         
-        # Re-hydrate and validate Pydantic model
         if 'params' in imported_data:
             imported_data['params'] = GraphRunParams(**imported_data['params'])
+        else:
+             return JSONResponse(content={"error": "Imported QNN state must contain 'params' section."}, status_code=400)
+        
+        service_context, _ = await _initialize_session_context(imported_data['params'])
 
-        session_id = session_manager.create_session(imported_data)
+        session_id = session_manager.create_session(imported_data, service_context)
         logging.info(f"--- [IMPORT] Successfully imported QNN file. New Session ID: {session_id} ---")
         
         return JSONResponse(content={
             "message": "QNN file imported successfully.",
             "session_id": session_id,
-            "imported_params": imported_data.get("params", {}).model_dump() if 'params' in imported_data else {}
+            "imported_params": imported_data.get("params", {}).model_dump()
         })
     except Exception as e:
         error_message = f"Failed to import QNN file: {e}"
@@ -336,22 +319,29 @@ async def import_qnn(file: UploadFile = File(...)):
 
 @router.post("/chat")
 async def chat_with_index(payload: dict = Body(...)):
+    """
+    Handles real-time, streaming chat with the RAG index of an active session.
+
+    Expects a payload containing `session_id` and a `message`. It retrieves the
+    session's ServiceContext, performs a RAG query, and streams the LLM's
+    response back to the client. The chat history is atomically updated.
+    """
     session_id = payload.get("session_id")
     session_object = session_manager.get_session(session_id)
     if not session_object:
         return JSONResponse(content={"error": "Invalid session ID"}, status_code=404)
 
-    state = session_object["state"]
-    raptor_index = state.get("raptor_index")
-    llm = state.get("llm")
+    services: ServiceContext = session_object.get("services")
+    raptor_index = services.raptor_index
+    llm = services.llm
     
     if not raptor_index or not llm:
-        return JSONResponse(content={"error": "RAG index or LLM not found"}, status_code=500)
+        return JSONResponse(content={"error": "RAG index or LLM not found in this session."}, status_code=500)
 
     async def stream_response():
         message = payload.get("message")
         
-        # Lock immediately to append the user's message to the history
+        # CRITICAL: Lock to ensure chat history is updated atomically.
         async with session_object["lock"]:
             session_object["state"]["chat_history"].append({"role": "user", "content": message})
 
@@ -366,7 +356,7 @@ async def chat_with_index(payload: dict = Body(...)):
                 yield content
                 full_response += content
             
-            # Lock again to append the final AI response
+            # CRITICAL: Lock again to append the final AI response.
             async with session_object["lock"]:
                 current_state = session_object["state"]
                 # Ensure the last entry is the user message to prevent double-adding AI response
@@ -385,8 +375,8 @@ async def diagnostic_chat_with_index(payload: dict = Body(...)):
     if not session_object:
         return JSONResponse(content={"error": "Invalid session ID"}, status_code=404)
 
-    state = session_object["state"]
-    raptor_index = state.get("raptor_index")
+    services: ServiceContext = session_object.get("services")
+    raptor_index = services.raptor_index
     if not raptor_index:
         return StreamingResponse((_ for _ in ["The RAG index is not yet available."]), media_type="text/event-stream")
         
@@ -417,35 +407,31 @@ async def harvest_session(payload: dict = Body(...)):
 
     try:
         logging.info("--- [HARVEST] Initiating Final Harvest Process ---")
-
         state_for_graph_run = {}
-        # Atomically read state, update it with chat history, and get a copy for the graph run
+        # Atomically update state with chat history and get a snapshot for the graph run.
         async with session_object["lock"]:
             state = session_object["state"]
             chat_history = state.get("chat_history", [])
-
             if chat_history:
                 chat_docs = [
                     Document(page_content=f"User: {chat_history[i-1]['content']}\nAI: {turn['content']}",
                              metadata={"source": "chat", "turn": i // 2})
                     for i, turn in enumerate(chat_history) if turn['role'] == 'ai'
                 ]
-                # Directly mutate the state under lock
                 if "all_rag_documents" not in state or not isinstance(state["all_rag_documents"], list):
                     state["all_rag_documents"] = []
                 state["all_rag_documents"].extend(chat_docs)
 
-            # Get a snapshot of the state to run the graph with, ensuring it has the chat docs
             state_for_graph_run = state.copy()
             
-        # Create a mini-graph for the harvest process to run asynchronously
         harvest_workflow = StateGraph(GraphState)
-
-        update_rag_node = create_update_rag_index_node(state_for_graph_run["summarizer_llm"], state_for_graph_run["embeddings_model"])
-        harvest_workflow.add_node("update_rag_index_final", lambda s: update_rag_node(s, end_of_run=True))
-
+        
+        # ARCH: The update_rag_node factory returns a specialized lambda for this post-run harvest graph.
+        _, update_rag_node_final = create_update_rag_index_node()
+        harvest_workflow.add_node("update_rag_index_final", update_rag_node_final)
+        
         num_questions = int(state_for_graph_run["params"].num_questions_for_harvest)
-        harvest_node = create_final_harvest_node(state_for_graph_run["llm"], state_for_graph_run["synthesizer_llm"], num_questions)
+        harvest_node = create_final_harvest_node(num_questions)
         harvest_workflow.add_node("final_harvest", harvest_node)
 
         harvest_workflow.set_entry_point("update_rag_index_final")
@@ -455,7 +441,10 @@ async def harvest_session(payload: dict = Body(...)):
         harvest_graph = harvest_workflow.compile()
         
         logging.info("--- [HARVEST] Executing Harvest Graph... ---")
-        async for output in harvest_graph.astream(state_for_graph_run):
+        async for output in harvest_graph.astream(
+            state_for_graph_run, 
+            {"configurable": {"session_id": session_id}}
+        ):
             for node_name, node_output in output.items():
                 logging.info(f"--- [HARVEST] Node Finished: {node_name} ---")
                 if isinstance(node_output, dict) and node_output:
@@ -465,7 +454,6 @@ async def harvest_session(payload: dict = Body(...)):
         # After the run, get the final state to find the report
         updated_session_object = session_manager.get_session(session_id)
         if not updated_session_object:
-             logging.error(f"Session {session_id} expired during harvest")
              return JSONResponse(content={"message": "Session expired during harvest"}, status_code=500)
 
         academic_papers = updated_session_object["state"].get("academic_papers", {})
