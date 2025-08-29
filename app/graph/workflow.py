@@ -126,8 +126,13 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     
     # If critique agents are configured, route the flow through them
     if critique_node_ids:
-        workflow.add_edge(forward_pass_exit_node, critique_node_ids)
-        workflow.add_edge(critique_node_ids, "archive_epoch_outputs")
+        # We must iterate and create an edge to each critique node individually.
+        for critique_node in critique_node_ids:
+            workflow.add_edge(forward_pass_exit_node, critique_node)
+        
+        # After all critiques are done, they fan-in to the archival step.
+        # Convert the list to a tuple to make it a valid, hashable source key.
+        workflow.add_edge(tuple(critique_node_ids), "archive_epoch_outputs")
     else: # Otherwise, connect directly to the archival step
         workflow.add_edge(forward_pass_exit_node, "archive_epoch_outputs")
 
