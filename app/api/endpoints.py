@@ -182,6 +182,109 @@ async def build_and_run_graph(payload: GraphRunPayload):
         logging.critical(f"--- FATAL ERROR DURING GRAPH SETUP ---", exc_info=True)
         return JSONResponse(content={"message": error_message, "traceback": tb_str}, status_code=500)
 
+@router.post("/continue_run_from_state")
+async def continue_run_from_state(payload: dict = Body(...)):
+    """
+    Loads a QNN state and continues the training process for a specified
+    number of additional epochs. This rebuilds the full graph with reflection
+    loops and hydrates it with the agent prompts from the imported state.
+    """
+    logging.info("--- [CONTINUE] Received request to continue run from imported state. ---")
+    try:
+        imported_state = payload.get("imported_state")
+        if not imported_state:
+            return JSONResponse(content={"error": "Payload must contain 'imported_state'."}, status_code=400)
+
+        # Ensure params are parsed into the Pydantic model
+        params_dict = imported_state.get("params", {})
+        if isinstance(params_dict, dict):
+            params = GraphRunParams(**params_dict)
+        elif isinstance(params_dict, GraphRunParams):
+            params = params_dict
+        else:
+             return JSONResponse(content={"error": "Invalid 'params' format in imported state."}, status_code=400)
+        
+        # We need to re-serialize the params back into the dict after potential model creation.
+        imported_state["params"] = params
+        
+        # Extract key components from the loaded state
+        existing_prompts = imported_state.get("all_layers_prompts")
+        existing_personas = imported_state.get("agent_personas")
+        existing_problems = imported_state.get("decomposed_problems")
+
+        if not all([params, existing_prompts, existing_personas, existing_problems]):
+            return JSONResponse(content={"error": "Imported state is missing necessary components for continuation."}, status_code=400)
+        
+        is_code = imported_state.get("is_code_request", False)
+
+        service_context, llm_configs = await _initialize_session_context(params)
+        
+        imported_state.update(llm_configs)
+
+        graph, _ = await build_graph_workflow(
+            params, 
+            service_context.llm, llm_configs['llm_config'], 
+            service_context.synthesizer_llm, 
+            service_context.summarizer_llm, 
+            service_context.embeddings_model, 
+            is_code,
+            existing_prompts=existing_prompts,
+            existing_personas=existing_personas,
+            existing_problems=existing_problems
+        )
+        
+        # The loaded state is our initial state for the continued run.
+        session_id = session_manager.create_session(imported_state, service_context)
+        
+        logging.info(f"--- Starting Continued Execution (Epochs: {params.num_epochs}) ---")
+
+        try:
+            recursion_limit = (params.num_epochs * len(graph.nodes)) + 50
+            async for output in graph.astream(
+                imported_state, 
+                {'recursion_limit': recursion_limit, "configurable": {"session_id": session_id}}
+            ):
+                for node_name, node_output in output.items():
+                    logging.info(f"--- Node Finished: {node_name} ---")
+                    if isinstance(node_output, dict) and node_output:
+                        await session_manager.update_session_state(session_id, node_output)
+        
+        except AgentExecutionError as e:
+            error_message = f"Execution halted due to a critical failure in agent '{e.node_id}'. Reason: {e.message}"
+            logging.error("--- FATAL EXECUTION ERROR ---", extra={"ui_extra": None})
+            logging.error(error_message, extra={"ui_extra": None})
+            return JSONResponse(content={"message": error_message}, status_code=500)
+
+        final_session_object = session_manager.get_session(session_id)
+        if not final_session_object:
+            logging.error(f"Session {session_id} expired or was lost before completion.")
+            return JSONResponse(content={"message": f"Session {session_id} could not be found after execution."}, status_code=404)
+        
+        final_state_value = final_session_object['state']
+        session_manager.set_final_state(session_id, final_state_value)
+
+        if is_code:
+            final_code_solution = final_state_value.get("final_solution", {})
+            final_modules = final_state_value.get("modules", [])
+            logging.info(f"--- 💻 Code Generation Finished. Returning final code and {len(final_modules)} modules. ---")
+            return JSONResponse(content={
+                "message": "Code generation complete.",
+                "code_solution": final_code_solution.get("proposed_solution", "# No code generated."),
+                "reasoning": final_code_solution.get("reasoning", "No reasoning provided."),
+                "modules": final_modules,
+                "session_id": session_id
+            })
+        else:
+            logging.info("--- Agent Execution Finished. Pausing for User Chat. ---")
+            return JSONResponse(content={"message": "Chat is now active.", "session_id": session_id})
+
+    except Exception as e:
+        error_message = f"An unexpected error occurred during continuation run setup: {e}"
+        tb_str = traceback.format_exc()
+        logging.critical(f"--- FATAL ERROR DURING CONTINUATION SETUP ---", exc_info=True)
+        return JSONResponse(content={"message": error_message, "traceback": tb_str}, status_code=500)
+
+
 @router.post("/run_inference_from_state")
 async def run_inference_from_state(payload: dict = Body(...)):
     """Runs inference on an imported QNN state without further training."""

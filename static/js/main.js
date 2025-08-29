@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
         importedQnnInfo: document.getElementById('imported-qnn-info'),
         loadedFilename: document.getElementById('loaded-filename'),
         inferenceOnlyBtn: document.getElementById('inference-only-btn'),
+        continueTrainingBtn: document.getElementById('continue-training-btn'),
         exportQnnButton: document.getElementById('export-qnn-button'),
         mbtiGrid: document.querySelector('.mbti-grid'),
     };
@@ -458,6 +459,33 @@ document.addEventListener('DOMContentLoaded', () => {
             const newPrompt = prompt("Enter the prompt for the inference run:", document.getElementById('prompt').value);
             if (!newPrompt || !newPrompt.trim()) { alert("A prompt is required."); return; }
             runInference({ imported_state: JSON.parse(state.importedStateContent), prompt: newPrompt });
+        });
+        
+        elements.continueTrainingBtn.addEventListener('click', () => {
+            if (!state.importedStateContent) {
+                alert("No QNN file loaded.");
+                return;
+            }
+    
+            const additionalEpochs = prompt("Enter the number of additional epochs to run:", "3");
+            if (!additionalEpochs || isNaN(parseInt(additionalEpochs)) || parseInt(additionalEpochs) <= 0) {
+                alert("Please enter a valid number of epochs.");
+                return;
+            }
+            
+            const importedState = JSON.parse(state.importedStateContent);
+            
+            const currentEpoch = importedState.epoch || 0;
+            const newMaxEpochs = currentEpoch + parseInt(additionalEpochs);
+            
+            // Update the max_epochs in the state before sending it
+            if(importedState.params) {
+                importedState.params.num_epochs = newMaxEpochs;
+            }
+            importedState.max_epochs = newMaxEpochs;
+    
+            // Call the generic run function
+            runGraph({ imported_state: importedState }, '/continue_run_from_state');
         });
 
         elements.exportQnnButton.addEventListener('click', () => {

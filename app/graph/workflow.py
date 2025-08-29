@@ -18,7 +18,18 @@ from app.services.schemas import DecompositionOutput
 from app.api.schemas import GraphRunParams
 from app.core.config import settings
 
-async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesizer_llm, summarizer_llm, embeddings_model, is_code: bool):
+async def build_graph_workflow(
+    params: GraphRunParams, 
+    llm, 
+    llm_config, 
+    synthesizer_llm, 
+    summarizer_llm, 
+    embeddings_model, 
+    is_code: bool, 
+    existing_prompts: list | None = None, 
+    existing_personas: dict | None = None, 
+    existing_problems: dict | None = None
+):
     """
     Builds the complete LangGraph workflow by defining nodes and their connections.
     """
@@ -27,45 +38,51 @@ async def build_graph_workflow(params: GraphRunParams, llm, llm_config, synthesi
     cot_trace_depth = params.cot_trace_depth
     total_agents = num_agents_per_layer * cot_trace_depth
 
-    logging.info("--- Decomposing Original Problem into Subproblems ---")
-    
-    # PHASE 1: Initial Prompt Generation.
-    # This block performs the expensive, one-time setup of decomposing the problem
-    # and using the AgentFactory to generate the initial system prompts for all agents.
-    # This phase does not build the graph itself but prepares the necessary inputs.
-    try:
-        timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
-        decomposition_result = await asyncio.wait_for(
-            get_structured_output(
-                llm=llm,
-                provider_config=llm_config,
-                prompt_template=prompt_service.get_template("problem_decomposition"),
-                input_data={"problem": user_prompt, "num_sub_problems": total_agents},
-                pydantic_schema=DecompositionOutput,
-                context_identifier="Workflow:InitialDecomposition"
-            ),
-            timeout=timeout
-        )
-        if not decomposition_result or not decomposition_result.sub_problems or len(decomposition_result.sub_problems) != total_agents:
-            raise ValueError(f"Problem decomposition failed or produced incorrect number of sub-problems. Expected {total_agents}, got {len(decomposition_result.sub_problems) if decomposition_result else 0}.")
+    # ARCH: If existing prompts are provided, bypass the expensive generation phase.
+    if existing_prompts and existing_personas and existing_problems:
+        logging.info("--- [SETUP] Hydrating graph workflow from existing QNN state. ---")
+        all_layers_prompts = existing_prompts
+        agent_personas = existing_personas
+        decomposed_problems_map = existing_problems
+    else:
+        logging.info("--- Decomposing Original Problem into Subproblems ---")
+        # PHASE 1: Initial Prompt Generation.
+        # This block performs the expensive, one-time setup of decomposing the problem
+        # and using the AgentFactory to generate the initial system prompts for all agents.
+        # This phase does not build the graph itself but prepares the necessary inputs.
+        try:
+            timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
+            decomposition_result = await asyncio.wait_for(
+                get_structured_output(
+                    llm=llm,
+                    provider_config=llm_config,
+                    prompt_template=prompt_service.get_template("problem_decomposition"),
+                    input_data={"problem": user_prompt, "num_sub_problems": total_agents},
+                    pydantic_schema=DecompositionOutput,
+                    context_identifier="Workflow:InitialDecomposition"
+                ),
+                timeout=timeout
+            )
+            if not decomposition_result or not decomposition_result.sub_problems or len(decomposition_result.sub_problems) != total_agents:
+                raise ValueError(f"Problem decomposition failed or produced incorrect number of sub-problems. Expected {total_agents}, got {len(decomposition_result.sub_problems) if decomposition_result else 0}.")
 
-        decomposed_problems_map = {
-            f"agent_{i}_{j}": decomposition_result.sub_problems[i * num_agents_per_layer + j]
-            for i in range(cot_trace_depth)
-            for j in range(num_agents_per_layer)
-        }
-        logging.info(f"SUCCESS: Decomposed into {len(decomposed_problems_map)} subproblems.")
+            decomposed_problems_map = {
+                f"agent_{i}_{j}": decomposition_result.sub_problems[i * num_agents_per_layer + j]
+                for i in range(cot_trace_depth)
+                for j in range(num_agents_per_layer)
+            }
+            logging.info(f"SUCCESS: Decomposed into {len(decomposed_problems_map)} subproblems.")
 
-        agent_factory = AgentFactory(llm=llm, llm_config=llm_config)
-        all_layers_prompts, agent_personas = await agent_factory.create_all_agent_prompts(
-            decomposed_problems_map=decomposed_problems_map,
-            params=params
-        )
-        logging.info("SUCCESS: Generated all agent prompts.")
+            agent_factory = AgentFactory(llm=llm, llm_config=llm_config)
+            all_layers_prompts, agent_personas = await agent_factory.create_all_agent_prompts(
+                decomposed_problems_map=decomposed_problems_map,
+                params=params
+            )
+            logging.info("SUCCESS: Generated all agent prompts.")
 
-    except Exception as e:
-        logging.critical(f"FATAL: Agent prompt generation or problem decomposition failed. Graph setup cannot continue. Error: {e}", exc_info=True)
-        raise e
+        except Exception as e:
+            logging.critical(f"FATAL: Agent prompt generation or problem decomposition failed. Graph setup cannot continue. Error: {e}", exc_info=True)
+            raise e
     
     # PHASE 2: Graph Definition and Construction.
     # This block defines the graph topology: registering all nodes and connecting them with edges.
