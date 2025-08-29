@@ -67,9 +67,11 @@ async def get_structured_output(
 
         # --- STRATEGY 2: Fallback to Dynamic Structured Delimiters ---
         response_str = None
+        full_prompt_str = ""
         try:
             logging.info(f"Attempting structured output via dynamic delimiters for {pydantic_schema.__name__} (Attempt {attempt+1}/{max_retries}).")
             
+            # Delimiter instruction building logic
             fields = pydantic_schema.model_fields
             delimiter_instructions = []
             for field_name, field_info in fields.items():
@@ -97,7 +99,6 @@ async def get_structured_output(
             formatted_base_prompt_obj = await base_prompt_template.ainvoke(input_data)
             formatted_base_prompt_str = formatted_base_prompt_obj.to_string()
 
-
             full_prompt_str = f"""{formatted_base_prompt_str}
 ---
 Output Mandate:
@@ -105,6 +106,9 @@ You MUST format your response using ONLY the following structure. Do not add any
 
 {delimiter_instructions_str}
 """
+
+            # This is the definitive log of the exact prompt sent to the LLM.
+            logging.info(f"RAW_LLM_INPUT_FOR_DEBUG ({pydantic_schema.__name__}):\n---BEGIN INPUT---\n{full_prompt_str}\n---END INPUT---")
             
             final_prompt = ChatPromptTemplate.from_template("{final_prompt_str}")
             chain = final_prompt | llm | StrOutputParser()
