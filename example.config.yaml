@@ -86,6 +86,13 @@ hyperparameters:
         Conclude with a single, sharp, reflective question that challenges the team's assumptions about the problem's importance.
 
 # -----------------------------------------------------------------------------
+# Persistence Configuration
+# -----------------------------------------------------------------------------
+persistence:
+  enabled: true # Set to true to use Redis for persistent sessions
+  redis_url: "redis://localhost:6379/0"
+
+# -----------------------------------------------------------------------------
 # LLM Provider Configuration
 # -----------------------------------------------------------------------------
 # For each role, choose ONE provider and comment out the others.

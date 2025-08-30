@@ -116,14 +116,19 @@ async def harvest_session(payload: dict = Body(...)):
 @router.get("/export_qnn/{session_id}")
 async def export_qnn(session_id: str):
     """Exports the current state of a session graph to a JSON file."""
-    session_object = session_manager.get_session(session_id)
-    if not session_object or not session_object.get('state'):
+    state = await session_manager.get_session(session_id)
+    if not state:
         raise HTTPException(status_code=404, detail="Session state not found or empty.")
-    state_to_export = session_object['state'].copy()
+        
+    state_to_export = state.copy()
+    # Ensure the non-serializable services object is not included in the export.
+    state_to_export.pop('services', None)
+
     if 'params' in state_to_export and isinstance(state_to_export['params'], GraphRunParams):
         state_to_export['params'] = state_to_export['params'].model_dump()
     if 'all_rag_documents' in state_to_export:
         state_to_export['all_rag_documents'] = [doc.dict() for doc in state_to_export.get('all_rag_documents', []) if isinstance(doc, Document)]
+        
     logging.info(f"--- [EXPORT] Exporting QNN for session {session_id} ---")
     return JSONResponse(content=state_to_export, headers={"Content-Disposition": f"attachment; filename=qnn_state_{session_id}.json"})
 
@@ -142,8 +147,7 @@ async def import_qnn(file: UploadFile = File(...)):
         else:
              raise HTTPException(status_code=400, detail="Imported QNN state must contain 'params' section.")
              
-        service_context, _ = await graph_orchestration_service._initialize_context(imported_data['params']) # Re-use the helper
-        session_id = session_manager.create_session(imported_data, service_context)
+        session_id = await session_manager.create_session(imported_data)
         logging.info(f"--- [IMPORT] Successfully imported QNN file. New Session ID: {session_id} ---")
         return JSONResponse(content={"message": "QNN file imported successfully.", "session_id": session_id, "imported_params": imported_data.get("params", {}).model_dump()})
     except Exception as e:
@@ -161,16 +165,43 @@ async def chat_with_index(payload: dict = Body(...)):
     """
     session_id = payload.get("session_id")
     message = payload.get("message")
-    session_object = session_manager.get_session(session_id)
-    if not session_object: raise HTTPException(status_code=404, detail="Invalid session ID")
-    services: ServiceContext = session_object.get("services")
+    if not session_id or not message:
+        raise HTTPException(status_code=400, detail="Payload must contain 'session_id' and 'message'.")
+    
+    # Initial check before entering streaming response
+    initial_state = await session_manager.get_session(session_id)
+    if not initial_state:
+        raise HTTPException(status_code=404, detail="Invalid session ID")
+    
+    services: ServiceContext = initial_state.get("services") # type: ignore
     if not services or not services.raptor_index or not services.llm:
         raise HTTPException(status_code=500, detail="RAG index or LLM not found in this session.")
 
     async def stream_response():
-        # CRITICAL: Lock to ensure chat history is updated atomically.
-        async with session_object["lock"]:
-            session_object["state"]["chat_history"].append({"role": "user", "content": message})
+        # Get the session-specific lock from the SessionManager
+        session_lock = session_manager.session_locks[session_id]
+
+        # Securely update chat history with the user's message
+        async with session_lock:
+            # [CONCURRENCY_CONTROL]: Acquire the session-specific lock from the central
+            #                      SessionManager to ensure atomic updates to the
+            #                      shared `chat_history`.
+            # [BEST_PRACTICE]: The state is re-fetched *inside* the lock to prevent TOCTOU
+            #                  (Time-of-Check to Time-of-Use) race conditions.
+            current_state = await session_manager.get_session(session_id)
+            if not current_state:
+                yield "Error: Session expired or not found."
+                return
+                
+            current_state["chat_history"].append({"role": "user", "content": message})
+            await session_manager.update_session_state(session_id, {"chat_history": current_state["chat_history"]})
+            # The local current_state is now up-to-date
+            services: ServiceContext = current_state.get("services") # type: ignore
+
+        if not services or not services.raptor_index or not services.llm:
+            yield "Error: RAG index or LLM not available for this session."
+            return
+
         try:
             retrieved_docs = await asyncio.to_thread(services.raptor_index.retrieve, message, k=10)
             context = "\n\n---\n\n".join([doc.page_content for doc in retrieved_docs])
@@ -180,32 +211,39 @@ async def chat_with_index(payload: dict = Body(...)):
                 content = chunk.content if hasattr(chunk, 'content') else str(chunk)
                 yield content
                 full_response += content
-            # CRITICAL: Lock again to append the final AI response.
-            async with session_object["lock"]:
-                if session_object["state"]["chat_history"] and session_object["state"]["chat_history"][-1]['role'] == 'user':
-                    session_object["state"]["chat_history"].append({"role": "ai", "content": full_response})
+
+            # Securely update chat history with the AI's final response
+            async with session_lock:
+                # Re-fetch again to ensure no other process (unlikely but possible) modified state
+                final_state = await session_manager.get_session(session_id)
+                if not final_state: return
+
+                if final_state["chat_history"] and final_state["chat_history"][-1]['role'] == 'user':
+                    final_state["chat_history"].append({"role": "ai", "content": full_response})
+                    await session_manager.update_session_state(session_id, {"chat_history": final_state["chat_history"]})
+
         except Exception as e:
             logging.error(f"Error during chat stream for session {session_id}: {e}", exc_info=True)
             yield f"Error: Could not generate response. {e}"
-    return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+    return StreamingResponse(stream_response(), media_type="text/plain")
 
 @router.post("/diagnostic_chat")
 async def diagnostic_chat_with_index(payload: dict = Body(...)):
     session_id = payload.get("session_id")
-    session_object = session_manager.get_session(session_id)
-    if not session_object:
+    state = await session_manager.get_session(session_id)
+    if not state:
         return JSONResponse(content={"error": "Invalid session ID"}, status_code=404)
 
-    services: ServiceContext = session_object.get("services")
-    raptor_index = services.raptor_index
-    if not raptor_index:
+    services: ServiceContext = state.get("services") # type: ignore
+    if not services or not services.raptor_index:
         return StreamingResponse((_ for _ in ["The RAG index is not yet available."]), media_type="text/event-stream")
         
     async def stream_response():
         query = payload.get("message", "").strip()
         try:
             logging.info(f"--- [DIAGNOSTIC] Raw RAG query received: '{query}' ---")
-            retrieved_docs = await asyncio.to_thread(raptor_index.retrieve, query, k=10)
+            retrieved_docs = await asyncio.to_thread(services.raptor_index.retrieve, query, k=10)
             if not retrieved_docs:
                 yield "No relevant documents found for that query."
                 return

@@ -4,10 +4,8 @@ import io
 import re
 import logging
 from contextlib import redirect_stdout, redirect_stderr
-from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
-from app.core.state_manager import session_manager
 from app.core.context import ServiceContext
 
 def execute_code_in_sandbox(code: str) -> (bool, str):
@@ -18,7 +16,6 @@ def execute_code_in_sandbox(code: str) -> (bool, str):
     if not code:
         return True, "No code to execute."
         
-    # Extract code from markdown block if present
     code_match = re.search(r"```(?:python\n)?([\s\S]*?)```", code)
     if code_match:
         code = code_match.group(1).strip()
@@ -26,7 +23,6 @@ def execute_code_in_sandbox(code: str) -> (bool, str):
     output_buffer = io.StringIO()
     try:
         with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
-            # Using a restricted globals dict for a little more safety
             exec(code, {'__builtins__': {
                 'print': print, 'range': range, 'len': len, 'str': str, 'int': int, 'float': float, 
                 'list': list, 'dict': dict, 'set': set, 'tuple': tuple, 'True': True, 'False': False, 'None': None
@@ -67,13 +63,11 @@ async def _code_execution_node_logic(state: GraphState, services: ServiceContext
 
 def create_code_execution_node():
     """Creates node to execute and validate the synthesized code."""
-    async def code_execution_node_wrapper(state: GraphState, config: RunnableConfig):
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for code execution node")
+    async def code_execution_node_wrapper(state: GraphState):
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for code execution node")
         
-        services: ServiceContext = session["services"]
         return await _code_execution_node_logic(state, services)
                    
     return code_execution_node_wrapper

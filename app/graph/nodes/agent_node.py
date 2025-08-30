@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
@@ -11,7 +10,6 @@ from app.services.structured_output_adapter import get_structured_output
 from app.services.schemas import AgentOutput
 from app.utils.exceptions import AgentExecutionError
 from app.graph.nodes.execution_nodes import execute_code_in_sandbox
-from app.core.state_manager import session_manager
 from app.core.context import ServiceContext
 
 async def _agent_node_logic(state: GraphState, services: ServiceContext, node_id: str) -> dict:
@@ -97,19 +95,13 @@ This is a log of your previous proposed solutions and reasonings (memory), and d
         logging.error(error_msg)
         raise AgentExecutionError(message="Failed to produce valid structured output after all retries.", node_id=node_id)
         
-    # This code only runs on success
     response_json = response_object.model_dump()
     
     if state.get("is_code_request") and layer_idx > 0:
         logging.info(f"--- [SANDBOX] Testing code from Agent {node_id} ---")
         code_to_test = response_json.get("proposed_solution", "")
         success, output = execute_code_in_sandbox(code_to_test)
-        sandbox_log = {
-            "sandbox_execution_log": {
-                "success": success,
-                "output": output
-            }
-        }
+        sandbox_log = { "sandbox_execution_log": { "success": success, "output": output } }
         agent_memory.append(sandbox_log)
         logging.info(f"--- [SANDBOX] Agent {node_id} Result: {'Success' if success else 'Failure'} ---")
         logging.info(output)
@@ -122,14 +114,19 @@ This is a log of your previous proposed solutions and reasonings (memory), and d
 
 def create_agent_node(node_id: str):
     """Factory for creating an agent node that is aware of the execution context."""
-    async def agent_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        """Wrapper that retrieves services and calls the core logic."""
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for node {node_id}")
-        
-        services: ServiceContext = session["services"]
+    async def agent_node_wrapper(state: GraphState) -> dict:
+        """
+        [PATTERN]: Dependency Consumer Node
+        [CONTEXT]: This wrapper follows the DI pattern where all dependencies
+                   (e.g., ServiceContext) are retrieved directly from the `state`
+                   object, which is managed by the central orchestrator.
+        [DECOUPLING]: This node is decoupled from the SessionManager and has no
+                      knowledge of session IDs or persistence layers.
+        """
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found in state for node {node_id}")
+
         return await _agent_node_logic(state, services, node_id)
 
     return agent_node_wrapper

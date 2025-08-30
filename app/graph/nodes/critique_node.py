@@ -3,11 +3,9 @@
 import asyncio
 import json
 import logging
-from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import CritiqueAgentConfig
-from app.core.state_manager import session_manager
 from app.core.context import ServiceContext
 
 async def _critique_node_logic(state: GraphState, services: ServiceContext, critique_config: CritiqueAgentConfig) -> dict:
@@ -38,13 +36,11 @@ async def _critique_node_logic(state: GraphState, services: ServiceContext, crit
 
 def create_critique_node(critique_config: CritiqueAgentConfig):
     """Factory for creating a critique node based on a persona from the config."""
-    async def critique_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for critique node {critique_config.name}")
+    async def critique_node_wrapper(state: GraphState) -> dict:
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for critique node {critique_config.name}")
         
-        services: ServiceContext = session["services"]
         return await _critique_node_logic(state, services, critique_config)
 
     return critique_node_wrapper

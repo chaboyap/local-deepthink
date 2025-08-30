@@ -1,11 +1,11 @@
 # app/graph/nodes/archival_nodes.py
+
 import asyncio
 import json
 import re
 import traceback
 import logging
 from langchain_core.documents import Document
-from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.rag.raptor import RAPTOR
 from app.services.prompt_service import prompt_service
@@ -46,14 +46,13 @@ async def _update_rag_node_logic(state: GraphState, services: ServiceContext, en
         await raptor_index.add_documents(all_docs)
         logging.info(f"SUCCESS: {node_name} built.")
 
-        # This allows the UI to enable the diagnostic chat.
         session_id = state.get('session_id')
         if session_id:
+            session_manager.store_rag_index(session_id, raptor_index)
             logging.info(f"Session {session_id} RAG index ready.", extra={
                 'ui_extra': {'type': 'session_id', 'data': session_id}
             })
         
-        # Update the service context with the new index
         services.raptor_index = raptor_index
         return {}
     except Exception as e:
@@ -62,27 +61,22 @@ async def _update_rag_node_logic(state: GraphState, services: ServiceContext, en
     
 def create_update_rag_index_node():
     """Creates node to build/update the RAPTOR RAG index."""
-    async def update_rag_node_wrapper(state: GraphState, config: RunnableConfig):
+    async def update_rag_node_wrapper(state: GraphState):
         """Wrapper that retrieves services and calls the core logic."""
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for RAG index node")
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for RAG index node")
         
-        services: ServiceContext = session["services"]
         return await _update_rag_node_logic(state, services, end_of_run=False)
 
-    def update_rag_node_final_wrapper(state: GraphState, config: RunnableConfig):
-        """Special wrapper for the end_of_run=True case."""
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for final RAG index node")
+    async def update_rag_node_final_wrapper(state: GraphState):
+        """Special wrapper for the end_of_run=True case, now async."""
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for final RAG index node")
 
-        services: ServiceContext = session["services"]
-        return asyncio.run(_update_rag_node_logic(state, services, end_of_run=True))
+        return await _update_rag_node_logic(state, services, end_of_run=True)
     
-    # Return two different functions based on need, a bit of a hack for the '/harvest' endpoint logic.
     # The main graph will use the first one. Harvest will use the second.
     return update_rag_node_wrapper, update_rag_node_final_wrapper
 
@@ -112,13 +106,11 @@ async def _metrics_node_logic(state: GraphState, services: ServiceContext):
     
 def create_metrics_node():
     """Creates node for calculating perplexity metrics."""
-    async def metrics_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for metrics node")
+    async def metrics_node_wrapper(state: GraphState) -> dict:
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for metrics node")
         
-        services: ServiceContext = session["services"]
         return await _metrics_node_logic(state, services)
 
     return metrics_node_wrapper

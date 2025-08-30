@@ -4,6 +4,7 @@ from typing import TypedDict, Annotated, List, Optional, Dict, Any
 from langchain_core.documents import Document
 from app.api.schemas import GraphRunParams
 from app.core.config import ProviderConfig
+from app.core.context import ServiceContext
 
 class GraphState(TypedDict):
     """
@@ -32,6 +33,9 @@ class GraphState(TypedDict):
     is_code_request: bool
     session_id: str
     chat_history: List[dict]
+    
+    # Live services, not serialized
+    services: ServiceContext
     
     # LLM and Config objects
     llm_config: ProviderConfig

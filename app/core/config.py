@@ -46,11 +46,16 @@ class Hyperparameters(BaseModel):
     agent_memory_limit_bytes: int = Field(..., gt=0)
     critique_agents: Optional[List[CritiqueAgentConfig]] = Field(default_factory=list)
 
+class PersistenceConfig(BaseModel):
+    enabled: bool = False
+    redis_url: str = "redis://localhost:6379/0"
+
 class AppSettings(BaseModel):
     """The main configuration model that holds all settings."""
     llm_providers: LLMProviders
     debugging: Debugging
     hyperparameters: Hyperparameters
+    persistence: PersistenceConfig
 
 # --- Singleton Loader ---
 

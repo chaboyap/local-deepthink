@@ -3,14 +3,12 @@
 import asyncio
 import json
 import logging
-from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
 from app.services.structured_output_adapter import get_structured_output
 from app.services.schemas import SynthesisOutput, GeneratedQuestions, CodeSynthesisOutput
 from app.utils.exceptions import AgentExecutionError
-from app.core.state_manager import session_manager
 from app.core.context import ServiceContext
 
 async def _synthesis_node_logic(state: GraphState, services: ServiceContext) -> dict:
@@ -35,11 +33,7 @@ async def _synthesis_node_logic(state: GraphState, services: ServiceContext) -> 
     else:
         synthesis_context = ""
 
-    synthesis_input = {
-        "original_request": state["original_request"], 
-        "agent_solutions": json.dumps(last_layer_outputs),
-        "synthesis_context": synthesis_context
-    }
+    synthesis_input = { "original_request": state["original_request"], "agent_solutions": json.dumps(last_layer_outputs), "synthesis_context": synthesis_context }
     
     try:
         template_name = "code_synthesis" if is_code else "synthesis"
@@ -53,32 +47,25 @@ async def _synthesis_node_logic(state: GraphState, services: ServiceContext) -> 
         if is_code:
             solution_obj = await asyncio.wait_for(
                 get_structured_output(
-                    llm=synthesizer_llm,
-                    provider_config=synthesizer_llm_config,
+                    llm=synthesizer_llm, provider_config=synthesizer_llm_config,
                     prompt_template=prompt_service.get_template("code_synthesis"),
-                    input_data=synthesis_input,
-                    pydantic_schema=CodeSynthesisOutput
-                ), timeout=timeout
-            )
+                    input_data=synthesis_input, pydantic_schema=CodeSynthesisOutput
+                ), timeout=timeout)
             solution = solution_obj.model_dump() if solution_obj else None
         else:
             solution_obj = await asyncio.wait_for(
                 get_structured_output(
-                    llm=synthesizer_llm,
-                    provider_config=synthesizer_llm_config,
+                    llm=synthesizer_llm, provider_config=synthesizer_llm_config,
                     prompt_template=prompt_service.get_template("synthesis"),
                     input_data={"original_request": state["original_request"], "agent_solutions": json.dumps(last_layer_outputs)},
                     pydantic_schema=SynthesisOutput
-                ), timeout=timeout
-            )
+                ), timeout=timeout)
             solution = solution_obj.model_dump() if solution_obj else None
 
-        if not solution:
-            raise ValueError("LLM returned malformed or empty solution.")
+        if not solution: raise ValueError("LLM returned malformed or empty solution.")
 
         logging.info("SUCCESS: Synthesis complete, final solution generated.")
-        solution_log_content = json.dumps(solution, indent=2)
-        logging.info(f"--- FINAL SYNTHESIZED SOLUTION ---\n{solution_log_content}")
+        logging.info(f"--- FINAL SYNTHESIZED SOLUTION ---\n{json.dumps(solution, indent=2)}")
         
         return {"final_solution": solution}
 
@@ -89,13 +76,11 @@ async def _synthesis_node_logic(state: GraphState, services: ServiceContext) -> 
         
 def create_synthesis_node():
     """Creates the node that synthesizes the final layer of agent outputs into a single solution."""
-    async def synthesis_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for synthesis node")
+    async def synthesis_node_wrapper(state: GraphState) -> dict:
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for synthesis node")
         
-        services: ServiceContext = session["services"]
         return await _synthesis_node_logic(state, services)
             
     return synthesis_node_wrapper
@@ -115,8 +100,7 @@ async def _final_harvest_node_logic(state: GraphState, services: ServiceContext,
     try:
         questions_obj = await asyncio.wait_for(
             get_structured_output(
-                llm=services.llm,
-                provider_config=state["llm_config"],
+                llm=services.llm, provider_config=state["llm_config"],
                 prompt_template=prompt_service.get_template("interrogator"),
                 input_data={
                     "original_request": state["original_request"],
@@ -159,13 +143,11 @@ async def _final_harvest_node_logic(state: GraphState, services: ServiceContext,
     
 def create_final_harvest_node(num_questions):
     """Creates the final harvest node for generating the comprehensive report."""
-    async def final_harvest_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for final harvest node")
+    async def final_harvest_node_wrapper(state: GraphState) -> dict:
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for final harvest node")
         
-        services: ServiceContext = session["services"]
         return await _final_harvest_node_logic(state, services, num_questions)
 
     return final_harvest_node_wrapper

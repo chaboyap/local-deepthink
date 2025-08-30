@@ -24,3 +24,5 @@ sse-starlette
 grandalf # For langgraph visualization
 names
 python-multipart
+redis
+aioredis

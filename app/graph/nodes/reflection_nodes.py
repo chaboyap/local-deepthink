@@ -1,17 +1,13 @@
 # app/graph/nodes/reflection_nodes.py
+
 import asyncio
 import json
 import logging
-import random
-from langchain_core.runnables import RunnableConfig
 from app.graph.state import GraphState
 from app.services.prompt_service import prompt_service
 from app.core.config import settings
 from app.services.structured_output_adapter import get_structured_output
-from app.services.schemas import (
-    NewProblemOutput, DecompositionOutput, AgentAnalysisOutput
-)
-from app.core.state_manager import session_manager
+from app.services.schemas import NewProblemOutput, DecompositionOutput, AgentAnalysisOutput
 from app.core.context import ServiceContext
 
 async def _reframe_node_logic(state: GraphState, services: ServiceContext) -> dict:
@@ -19,30 +15,25 @@ async def _reframe_node_logic(state: GraphState, services: ServiceContext) -> di
     llm, llm_config = services.llm, state["llm_config"]
     timeout = settings.hyperparameters.timeouts.reflection_timeout_seconds
 
-    # Get critiques from the state to pass to the reframer prompt
     critiques = state.get("critiques", {})
     critique_str = "No critiques were provided for this epoch."
     if critiques:
-        critique_str = "\n\n".join(
-            f"--- Critique from {name} ---\n{text}" for name, text in critiques.items()
-        )
+        critique_str = "\n\n".join(f"--- Critique from {name} ---\n{text}" for name, text in critiques.items())
     
     try:
         new_problem_obj = await asyncio.wait_for(
             get_structured_output(
-                llm=llm,
-                provider_config=llm_config,
+                llm=llm, provider_config=llm_config,
                 prompt_template=prompt_service.get_template("problem_reframer"),
                 input_data={
                     "original_request": state["original_request"],
                     "final_solution": json.dumps(state.get("final_solution")),
                     "current_problem": state.get("current_problem"),
-                    "critiques": critique_str # Pass critiques to the prompt
+                    "critiques": critique_str
                 },
                 pydantic_schema=NewProblemOutput,
                 context_identifier=f"ReframeNode:Epoch{state.get('epoch', 0)}"
-            ),
-            timeout=timeout
+            ), timeout=timeout
         )
         if not new_problem_obj: raise ValueError("Re-framer returned no valid output.")
         new_problem = new_problem_obj.new_problem
@@ -52,16 +43,14 @@ async def _reframe_node_logic(state: GraphState, services: ServiceContext) -> di
         
         decomp_obj = await asyncio.wait_for(
             get_structured_output(
-                llm=llm,
-                provider_config=llm_config,
+                llm=llm, provider_config=llm_config,
                 prompt_template=prompt_service.get_template("problem_decomposition"),
                 input_data={"problem": new_problem, "num_sub_problems": num_agents},
                 pydantic_schema=DecompositionOutput
-            ),
-            timeout=timeout
+            ), timeout=timeout
         )
         if not decomp_obj or len(decomp_obj.sub_problems) != num_agents:
-             raise ValueError(f"Decomposition of new problem failed. Expected {num_agents} problems, got {len(decomp_obj.sub_problems) if decomp_obj else 0}.")
+             raise ValueError(f"Decomposition of new problem failed. Expected {num_agents}, got {len(decomp_obj.sub_problems) if decomp_obj else 0}.")
 
         new_map = {f"agent_{i}_{j}": decomp_obj.sub_problems[i * len(state['all_layers_prompts'][i]) + j]
                    for i in range(len(state['all_layers_prompts'])) for j in range(len(state['all_layers_prompts'][i]))}
@@ -73,13 +62,11 @@ async def _reframe_node_logic(state: GraphState, services: ServiceContext) -> di
 
 def create_reframe_and_decompose_node():
     """Creates node to re-frame and decompose the problem after an epoch."""
-    async def reframe_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for reframe node")
+    async def reframe_node_wrapper(state: GraphState) -> dict:
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for reframe node")
         
-        services: ServiceContext = session["services"]
         return await _reframe_node_logic(state, services)
     return reframe_node_wrapper
 
@@ -100,8 +87,7 @@ async def _update_prompts_node_logic(state: GraphState, services: ServiceContext
             try:
                 analysis = await asyncio.wait_for(
                     get_structured_output(
-                        llm=llm,
-                        provider_config=llm_config,
+                        llm=llm, provider_config=llm_config,
                         prompt_template=prompt_service.get_template("attribute_and_hard_request_generator"),
                         input_data={"agent_prompt": agent_prompt, "vector_word_size": params.vector_word_size},
                         pydantic_schema=AgentAnalysisOutput
@@ -130,21 +116,14 @@ async def _update_prompts_node_logic(state: GraphState, services: ServiceContext
     
     logging.info(f"--- Finished Epoch {state.get('epoch', 0)}. ---")
     previous_solution_str = json.dumps(state.get("final_solution")) if state.get("final_solution") else ""
-    return { 
-        "all_layers_prompts": prompts_copy, 
-        "agent_outputs": {}, 
-        "previous_solution": previous_solution_str,
-        "final_solution": None
-    }
+    return { "all_layers_prompts": prompts_copy, "agent_outputs": {}, "previous_solution": previous_solution_str, "final_solution": None }
 
 def create_update_agent_prompts_node():
     """Creates the node that updates agent prompts based on the newly reframed problem."""
-    async def update_prompts_node_wrapper(state: GraphState, config: RunnableConfig) -> dict:
-        session_id = config["configurable"]["session_id"]
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise RuntimeError(f"Session {session_id} not found for update prompts node")
+    async def update_prompts_node_wrapper(state: GraphState) -> dict:
+        services: ServiceContext = state.get("services") # type: ignore
+        if not services:
+            raise RuntimeError(f"ServiceContext not found for update prompts node")
         
-        services: ServiceContext = session["services"]
         return await _update_prompts_node_logic(state, services)
     return update_prompts_node_wrapper
