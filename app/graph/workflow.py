@@ -112,7 +112,10 @@ async def build_graph_workflow(
             critique_node_ids.append(node_id)
             
     workflow.add_node("archive_epoch_outputs", create_archive_epoch_outputs_node())
-    workflow.add_node("update_rag_index", create_update_rag_index_node())
+
+    update_rag_node_for_loop, _ = create_update_rag_index_node()
+    workflow.add_node("update_rag_index", update_rag_node_for_loop)
+
     workflow.add_node("metrics", create_metrics_node())
     workflow.add_node("reframe_and_decompose", create_reframe_and_decompose_node())
     workflow.add_node("update_prompts", create_update_agent_prompts_node())

@@ -3,7 +3,8 @@
 import asyncio
 import uuid
 import logging
-import redis.asyncio as redis
+import random
+from redis import asyncio as aredis, WatchError 
 from typing import Dict, Any, Optional
 from cachetools import TTLCache, LRUCache
 from collections import defaultdict
@@ -15,39 +16,21 @@ from app.services.llm_service import initialize_llms, LLMInitializationParams
 from app.core.serialization import serialize_state, deserialize_state
 
 class SessionManager:
-    """
-    [ROLE]: Central authority for session state, live services, and concurrency.
+    """Manages the lifecycle, persistence, and live context of user sessions.
 
-    [ARCHITECTURAL_PATTERN]: State Hydrator & Non-Serializable Boundary Controller.
-    This class manages the boundary between the serializable `GraphState` (for persistence)
-    and the live `ServiceContext` (for runtime operations). It injects services
-    into the state object only when it is active in memory.
+    This class serves as the central authority for all session-related state. It
+    handles the critical boundary between the serializable GraphState, which is
+    persisted to Redis, and the live, non-serializable ServiceContext (e.g.,
+    LLM clients, RAG indexes), which is injected at runtime.
 
-    [CORE_RESPONSIBILITIES]:
-      - [STATE_LIFECYCLE]: Abstract persistence of session state via Redis or in-memory dict.
-          - Method: `create_session`, `update_session_state`, `set_final_state`
-      - [SERVICE_HYDRATION]: Re-initialize and inject `ServiceContext` on session load.
-          - Method: `get_session`
-      - [RESILIENCE]: Rebuild live RAPTOR RAG index from persisted documents on cache miss (e.g., post-restart).
-          - Method: `get_session` (internal logic)
-      - [RESOURCE_MANAGEMENT]: Cache live RAG indexes in a memory-bounded LRUCache to prevent OOM errors.
-          - Method: `store_rag_index`
-      - [CONCURRENCY_CONTROL]: Vend session-specific `asyncio.Lock`s to prevent race conditions.
-          - Attribute: `session_locks`
-      - [UI_STREAMING]: Own the `asyncio.Queue` for routing structured logs to the frontend.
-          - Attribute: `log_stream`
-
-    [PUBLIC_API]:
-      - `create_session(initial_state: dict) -> str`: Persists initial state, returns new session_id.
-      - `get_session(session_id: str) -> dict | None`: Retrieves state from persistence and hydrates it with live services.
-      - `update_session_state(session_id: str, node_output: dict)`: Atomically updates persisted state.
-      - `set_final_state(session_id: str, final_state: dict)`: Overwrites state with final graph output.
-      - `store_rag_index(session_id: str, raptor_index: RAPTOR)`: Caches a live RAG index.
-      - `session_locks[session_id]`: Accessor for a session's `asyncio.Lock`.
+    This "hydration" pattern makes sessions resilient to application restarts,
+    as live services can be rebuilt from the persisted state. It also manages
+    concurrency for state updates and provides the central queue for streaming
+    UI logs.
     """
     def __init__(self):
         if settings.persistence.enabled:
-            self.redis_client = redis.from_url(settings.persistence.redis_url)
+            self.redis_client = aredis.from_url(settings.persistence.redis_url)
             logging.info(f"--- Persistence ENABLED. Connecting to Redis at {settings.persistence.redis_url} ---")
         else:
             self.sessions_in_memory: Dict[str, Dict[str, Any]] = {}
@@ -78,13 +61,10 @@ class SessionManager:
         return session_id
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """
-        [ARCHITECTURAL_ROLE]: State Hydrator
-        [PRIMARY_TASK]: Retrieve serialized state from persistence and inject live,
-                    non-serializable services to make it runtime-ready.
-        [RESILIENCE_MECHANISM]: On RAG index cache miss (e.g., post-restart),
-                                this method rebuilds the live index from
-                                persisted documents (`all_rag_documents`).
+        """Retrieves and "hydrates" a session state, making it runtime-ready.
+        This method retrieves the serialized state, deserializes it, initializes
+        the live ServiceContext (LLMs, etc.), rebuilds the RAG index if needed,
+        and injects the context into the state object under the 'services' key.
         """
         state_json = None
         if settings.persistence.enabled:
@@ -128,30 +108,71 @@ class SessionManager:
         state['services'] = service_context
         return state
 
-    async def update_session_state(self, session_id: str, node_output: Dict[str, Any]):
+    _UPDATE_RETRIES = 3
+    _RETRY_BACKOFF_FACTOR = 0.1
+
+    async def _attempt_atomic_update(self, session_id: str, node_output: Dict[str, Any]) -> bool:
+        """Attempts a single, atomic read-modify-write operation in Redis.
+        This internal helper implements the core Redis transaction logic using WATCH.
         """
-        Atomically updates the state of a specific session in Redis or memory.
-        """
-        if settings.persistence.enabled:
-            async with self.redis_client.pipeline(transaction=True) as pipe:
-                session_key = f"session:{session_id}"
+        async with self.redis_client.pipeline(transaction=True) as pipe:
+            session_key = f"session:{session_id}"
+            try:
+                # Set up the watch
                 await pipe.watch(session_key)
+
+                # The "read" part of the cycle
                 state_json_bytes = await pipe.get(session_key)
                 if not state_json_bytes:
-                    return 
+                    logging.warning(f"Session {session_id} expired or was deleted during update attempt.")
+                    return True # Nothing to update, so it's a "success"
 
                 state = deserialize_state(state_json_bytes.decode('utf-8'))
+
+                # The "modify" part of the cycle
                 self._apply_updates_to_state(state, node_output)
                 updated_state_json = serialize_state(state)
-                
-                pipe.multi()
-                await pipe.set(session_key, updated_state_json, ex=settings.hyperparameters.session_ttl_seconds)
-                try:
-                    await pipe.execute()
-                except redis.exceptions.WatchError:
-                    logging.warning(f"WatchError on session {session_id}, update failed. Another process may have updated it.")
 
-        else: # In-memory update
+                # The "write" part of the cycle (staged in the transaction)
+                pipe.multi()
+                pipe.set(session_key, updated_state_json, ex=settings.hyperparameters.session_ttl_seconds)
+
+                # Attempt to execute the transaction
+                await pipe.execute()
+                return True # Success!
+
+            except WatchError:
+                # The key was modified by another client after we WATCHed it.
+                # The transaction was aborted.
+                return False # Indicate failure due to collision.
+
+    async def update_session_state(self, session_id: str, node_output: Dict[str, Any]):
+        """Atomically updates a session's state, retrying on data race collisions.
+        This method merges node output into the persisted session state. It uses an
+        optimistic locking pattern with exponential backoff to handle concurrent
+        writes gracefully.
+        """
+        if settings.persistence.enabled:
+            for attempt in range(self._UPDATE_RETRIES):
+                success = await self._attempt_atomic_update(session_id, node_output)
+                if success:
+                    # Log success only on the first attempt for cleaner logs
+                    if attempt == 0:
+                        logging.debug(f"State for session {session_id} updated successfully on first try.")
+                    else:
+                        logging.info(f"State for session {session_id} updated successfully after {attempt + 1} attempts.")
+                    return # Exit successfully
+
+                # If we failed, wait before retrying
+                logging.warning(f"Collision detected for session {session_id} (Attempt {attempt + 1}/{self._UPDATE_RETRIES}). Retrying...")
+                # [KISS]: Simple exponential backoff with jitter to prevent thundering herd
+                backoff_time = self._RETRY_BACKOFF_FACTOR * (2 ** attempt)
+                jitter = random.uniform(0, backoff_time * 0.1)
+                await asyncio.sleep(backoff_time + jitter)
+
+            logging.error(f"FATAL: Failed to update state for session {session_id} after {self._UPDATE_RETRIES} attempts. Update was dropped.")
+
+        else: # In-memory update remains the same (no concurrency issue to solve)
             session_data = self.sessions_in_memory.get(session_id)
             if not session_data:
                 return

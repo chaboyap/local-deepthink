@@ -6,7 +6,7 @@ from typing import List
 class GraphRunParams(BaseModel):
     """Defines the user-configurable parameters for a graph run."""
     prompt: str = Field(..., min_length=10)
-    mbti_archetypes: List[str] = Field(..., min_items=2)
+    mbti_archetypes: List[str] = Field(..., min_items=2) # type: ignore
     cot_trace_depth: int = Field(default=2, ge=2, le=16)
     num_questions: int = Field(default=10, ge=5, le=50, alias="num_questions_for_harvest") # Use alias for backend consistency
     num_epochs: int = Field(default=1, ge=1)

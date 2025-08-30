@@ -15,6 +15,7 @@ langgraph
 # RAG & Vector Store
 faiss-cpu
 scikit-learn
+cachetools
 
 # Utilities
 pyyaml
